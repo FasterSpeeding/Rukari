@@ -29,17 +29,23 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 use std::collections::HashMap;
-use std::time::Duration;
+use std::sync::Arc;
 
+use futures_util::{Sink, StreamExt};
+use log::{as_error, warn};
 use pyo3::conversion::ToPyObject;
 use pyo3::exceptions::PyValueError;
-use pyo3::types::{IntoPyDict, PyDict, PyModule, PyType};
-use pyo3::{pyclass, pymethods, pymodule, AsPyPointer, Py, PyAny, PyObject, PyResult, Python};
+use pyo3::types::{IntoPyDict, PyType};
+use pyo3::{pyclass, pymethods, Py, PyAny, PyErr, PyObject, PyResult, Python};
+use pythonize::pythonize;
+use serde_json::Value;
+use tokio::sync::{Notify, RwLock};
 use twilight_gateway::cluster::{Cluster, ShardScheme};
-use twilight_gateway::shard::Shard;
+use twilight_model::gateway::event::Event;
 use twilight_model::gateway::payload::outgoing::identify::IdentifyProperties;
 use twilight_model::gateway::Intents;
-// use tokio::stream::Stream;
+
+pyo3::import_exception!(hikari, ComponentStateConflictError);
 
 
 enum BotMessage {}
@@ -114,24 +120,14 @@ impl _BotRefs {
 
 #[pyclass(unsendable)]
 struct Bot {
-    cluster: Option<Cluster>,
+    cluster: Arc<RwLock<Option<Cluster>>>,
     intents: Intents,
     intents_py: PyObject,
+    notify: Arc<Notify>,
     refs: Py<_BotRefs>,
     shards: Option<(u64, u64, u64)>,
     token: String,
 }
-
-// #[inline]
-// fn _get_latency(shard: &Shard) -> (u64, f64) {
-//     let latency = shard
-//         .info()
-//         .ok()
-//         .and_then(|info| info.latency().recent().back().map(|duration|
-// duration.as_secs_f64()))         .unwrap_or(f64::NAN);
-
-//     return (shard.config().shard()[0], latency);
-// }
 
 #[pymethods]
 impl Bot {
@@ -157,11 +153,12 @@ impl Bot {
 
     #[getter(heartbeat_latencies)]
     fn get_heartbeat_latencies(&self) -> HashMap<u64, f64> {
-        if self.cluster.is_none() {
-            return HashMap::new();
-        }
+        let cluster = match self.cluster.try_read() {
+            Ok(cluster) if cluster.is_some() => cluster,
+            _ => return HashMap::new(),
+        };
 
-        self.cluster
+        cluster
             .as_ref()
             .unwrap()
             .shards()
@@ -177,33 +174,27 @@ impl Bot {
             .collect()
     }
 
-    // #[getter(heartbeat_latencies)]
-    // fn get_heartbeat_latencies(&self) -> HashMap<u64, f64> {
-    //     self.cluster
-    //         .as_ref()
-    //         .map(|cluster| cluster.shards().map(_get_latency).collect())
-    //         .unwrap_or_else(HashMap::new)
-    // }
-
     #[getter(heartbeat_latency)]
     fn get_heartbeat_latency(&self) -> f64 {
-        self.cluster
-            .as_ref()
-            .and_then(|cluster| {
-                let latencies = cluster
-                    .shards()
-                    .filter_map(|shard| shard.info().ok())
-                    .filter_map(|info| info.latency().recent().back().map(Duration::as_secs_f64))
-                    .collect::<Vec<f64>>();
+        let cluster = match self.cluster.try_read() {
+            Ok(cluster) if cluster.is_some() => cluster,
+            _ => return f64::NAN,
+        };
 
-                let len = latencies.len();
-                if len == 0 {
-                    None
-                } else {
-                    Some(latencies.into_iter().sum::<f64>() / len as f64)
-                }
-            })
-            .unwrap_or(f64::NAN)
+        let latencies = cluster
+            .as_ref()
+            .unwrap()
+            .shards()
+            .filter_map(|shard| shard.info().ok())
+            .filter_map(|info| info.latency().recent().back().map(std::time::Duration::as_secs_f64))
+            .collect::<Vec<f64>>();
+
+        let len = latencies.len();
+        if len == 0 {
+            f64::NAN
+        } else {
+            latencies.into_iter().sum::<f64>() / len as f64
+        }
     }
 
     #[getter(http_settings)]
@@ -213,7 +204,8 @@ impl Bot {
 
     #[getter(is_alive)]
     fn get_is_alive(&self) -> bool {
-        self.cluster.is_some()
+        let read = self.cluster.try_read();
+        read.is_err() || read.unwrap().is_some()
     }
 
     #[getter(intents)]
@@ -233,15 +225,23 @@ impl Bot {
 
     #[getter(shard_count)]
     fn get_shard_count(&self) -> u64 {
-        self.cluster
+        let cluster = match self.cluster.try_read() {
+            Ok(cluster) if cluster.is_some() => cluster,
+            _ => return 0,
+        };
+
+        cluster
             .as_ref()
-            .and_then(|cluster| cluster.shards().next().map(|shard| shard.config().shard()[1]))
+            .unwrap()
+            .shards()
+            .next()
+            .map(|shard| shard.config().shard()[1])
             .unwrap_or(0)
     }
 
     #[getter(shards)]
     fn get_shards(&self, py: Python) -> PyObject {
-        PyDict::new(py).to_object(py)
+        pyo3::types::PyDict::new(py).to_object(py)
     }
 
     #[new]
@@ -337,35 +337,96 @@ impl Bot {
             .to_object(py);
 
         Ok(Self {
-            cluster: None,
+            cluster: Arc::new(RwLock::new(None)),
             refs,
             intents,
             intents_py,
+            notify: Arc::new(Notify::new()),
             shards,
             token,
         })
     }
 
-    fn close(&mut self) {
-    }
-
-    fn join(&mut self) {
-    }
-
-    fn run(&mut self) {
-    }
-
-    fn start(&mut self) -> PyResult<()> {
-        let mut cluster = Cluster::builder(self.token.clone(), self.intents)
-            .event_types(twilight_gateway::EventTypeFlags::SHARD_PAYLOAD)
-            .identify_properties(IdentifyProperties::new("hikari", "hikari", std::env::consts::OS));
-
-        if let Some((from, to, total)) = self.shards {
-            cluster = cluster.shard_scheme(ShardScheme::Range { from, to, total });
+    fn close<'p>(&mut self, py: Python<'p>) -> PyResult<&'p PyAny> {
+        if self.get_is_alive() {
+            return Err(PyErr::new::<ComponentStateConflictError, _>(("Cluster isn't running",)));
         }
 
-        // let (cluster, events) = cluster.build().await?;
+        let cluster_ref = self.cluster.clone();
+        let notify = self.notify.clone();
+        pyo3_asyncio::tokio::future_into_py(py, async move {
+            let mut cluster = cluster_ref.write().await;
+            cluster
+                .as_ref()
+                .ok_or_else(|| PyErr::new::<ComponentStateConflictError, _>(("Cluster isn't running",)))?
+                .down();
+
+            *cluster = None;
+            notify.notify_waiters();
+            Ok(())
+        })
+    }
+
+    fn join<'p>(&self, py: Python<'p>) -> PyResult<&'p PyAny> {
+        let notify = self.notify.clone();
+        pyo3_asyncio::tokio::future_into_py(py, async move {
+            notify.notified().await;
+            Ok(())
+        })
+    }
+
+    fn run(&mut self, py: Python) -> PyResult<()> {
+        if self.get_is_alive() {
+            return Err(PyErr::new::<ComponentStateConflictError, _>((
+                "Cluster is already running",
+            )));
+        }
+
+        let run_until_complete = py
+            .import("asyncio")?
+            .call_method0("new_event_loop")?
+            .getattr("run_until_complete")?;
+        run_until_complete.call1((self.start(py)?,))?;
+        run_until_complete.call1((self.join(py)?,))?;
         Ok(())
+    }
+
+    fn start<'p>(&mut self, py: Python<'p>) -> PyResult<&'p PyAny> {
+        if self.get_is_alive() {
+            return Err(PyErr::new::<ComponentStateConflictError, _>((
+                "Cluster is already running",
+            )));
+        }
+
+        let cluster_arc = self.cluster.clone();
+        let intents = self.intents;
+        let token = self.token.clone();
+        let shards = self.shards;
+        let consume_raw_event = self.get_event_manager(py).getattr(py, "consume_raw_event")?;
+
+        pyo3_asyncio::tokio::future_into_py(py, async move {
+            let mut cluster = Cluster::builder(token, intents)
+                .event_types(twilight_gateway::EventTypeFlags::SHARD_PAYLOAD)
+                .identify_properties(IdentifyProperties::new("hikari", "hikari", std::env::consts::OS));
+
+            if let Some((from, to, total)) = shards {
+                cluster = cluster.shard_scheme(ShardScheme::Range { from, to, total });
+            }
+
+            // TODO: handle error
+            let (cluster, events) = cluster.build().await.unwrap();
+            let mut cluster_ref = cluster_arc.try_write().unwrap();
+            *cluster_ref = Some(cluster);
+            drop(cluster_ref);
+            let sink = EventManagerSink::new(consume_raw_event);
+
+            tokio::spawn(async move {
+                // TODO: error handling
+                events.map(Ok).forward(sink).await.unwrap();
+            });
+
+            Ok(())
+        })
     }
 
     fn get_me(&self, py: Python) -> PyObject {
@@ -382,10 +443,81 @@ impl Bot {
     }
 }
 
-// #[pyo3_asyncio::tokio::main(flavor = "current_thread")]
+struct EventManagerSink {
+    consume_raw_event: PyObject,
+}
 
-#[pymodule]
-fn rukari(python: Python<'_>, module: &PyModule) -> PyResult<()> {
+impl EventManagerSink {
+    fn new(consume_raw_event: PyObject) -> Self {
+        Self { consume_raw_event }
+    }
+}
+
+impl Sink<(u64, Event)> for EventManagerSink {
+    type Error = ();
+
+    fn poll_ready(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn start_send(self: std::pin::Pin<&mut Self>, item: (u64, Event)) -> Result<(), Self::Error> {
+        let (shard_id, payload) = match item {
+            (shard_id, Event::ShardPayload(payload)) => (shard_id, payload),
+            _ => unimplemented!(),
+        };
+
+        let parsed = match serde_json::from_slice::<Value>(&payload.bytes) {
+            Ok(data) => data,
+            Err(err) => {
+                warn!(err = as_error!(err); "Failed to deserialize JSON");
+                return Ok(());
+            }
+        };
+
+        let (data, name) = match (parsed.get("d"), parsed.get("t").map(Value::as_str)) {
+            (Some(data), Some(Some(name))) => (data, name),
+            _ => {
+                warn!("Failed to parse event data");
+                return Ok(());
+            }
+        };
+
+        Python::with_gil(|py| {
+            let py_data = match pythonize(py, &data) {
+                Ok(py_data) => py_data,
+                Err(err) => {
+                    warn!(err = as_error!(err); "Failed to deserialize JSON");
+                    return;
+                }
+            };
+
+            // TODO: error handling
+            self.consume_raw_event.call1(py, (name, py.None(), py_data)).unwrap();
+        });
+
+        Ok(())
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn poll_close(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+#[pyo3::pymodule]
+fn rukari(python: Python<'_>, module: &pyo3::types::PyModule) -> PyResult<()> {
     let _ = pyo3_log::try_init();
 
     module.add_class::<BotManager>()?;
