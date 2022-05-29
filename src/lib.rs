@@ -427,7 +427,6 @@ impl Bot {
             *cluster_arc.write().await = Some(cluster.clone());
 
             tokio::spawn(async move {
-                // TODO: error handling
                 events
                     .map(Ok)
                     .forward(futures_util::sink::unfold((), move |(), item| {
