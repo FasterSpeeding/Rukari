@@ -28,6 +28,7 @@
 // CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
+#![feature(never_type)]
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -61,8 +62,10 @@ struct BotManager {
 
 fn _to_intents(intents: Option<u64>) -> PyResult<Intents> {
     intents
-        .map(Intents::from_bits) // Intents::MESSAGE_CONTENT |
-        .unwrap_or_else(|| Some(Intents::all() & !(Intents::GUILD_MEMBERS | Intents::GUILD_PRESENCES)))
+        .map(Intents::from_bits)
+        .unwrap_or_else(|| {
+            Some(Intents::all() & !(Intents::GUILD_MEMBERS | Intents::GUILD_PRESENCES | Intents::MESSAGE_CONTENT))
+        })
         .ok_or_else(|| PyValueError::new_err("Invalid intent(s) passed"))
 }
 
@@ -120,7 +123,7 @@ impl _BotRefs {
 
 #[pyclass(unsendable)]
 struct Bot {
-    cluster: Arc<RwLock<Option<Cluster>>>,
+    cluster: Arc<RwLock<Option<Arc<Cluster>>>>,
     intents: Intents,
     intents_py: PyObject,
     notify: Arc<Notify>,
@@ -338,10 +341,10 @@ impl Bot {
 
         Ok(Self {
             cluster: Arc::new(RwLock::new(None)),
-            refs,
             intents,
             intents_py,
             notify: Arc::new(Notify::new()),
+            refs,
             shards,
             token,
         })
@@ -352,10 +355,10 @@ impl Bot {
             return Err(PyErr::new::<ComponentStateConflictError, _>(("Cluster isn't running",)));
         }
 
-        let cluster_ref = self.cluster.clone();
+        let cluster = self.cluster.clone();
         let notify = self.notify.clone();
         pyo3_asyncio::tokio::future_into_py(py, async move {
-            let mut cluster = cluster_ref.write().await;
+            let mut cluster = cluster.write().await;
             cluster
                 .as_ref()
                 .ok_or_else(|| PyErr::new::<ComponentStateConflictError, _>(("Cluster isn't running",)))?
@@ -399,10 +402,15 @@ impl Bot {
         }
 
         let cluster_arc = self.cluster.clone();
-        let intents = self.intents;
-        let token = self.token.clone();
-        let shards = self.shards;
+        let call_soon_threadsafe = pyo3_asyncio::get_running_loop(py)?
+            .getattr("call_soon_threadsafe")?
+            .to_object(py);
+
         let consume_raw_event = self.get_event_manager(py).getattr(py, "consume_raw_event")?;
+        let intents = self.intents;
+        let notify = self.notify.clone();
+        let shards = self.shards;
+        let token = self.token.clone();
 
         pyo3_asyncio::tokio::future_into_py(py, async move {
             let mut cluster = Cluster::builder(token, intents)
@@ -415,16 +423,58 @@ impl Bot {
 
             // TODO: handle error
             let (cluster, events) = cluster.build().await.unwrap();
-            let mut cluster_ref = cluster_arc.try_write().unwrap();
-            *cluster_ref = Some(cluster);
-            drop(cluster_ref);
-            let sink = EventManagerSink::new(consume_raw_event);
+            let cluster = Arc::new(cluster);
+            *cluster_arc.write().await = Some(cluster.clone());
 
             tokio::spawn(async move {
                 // TODO: error handling
-                events.map(Ok).forward(sink).await.unwrap();
+                events
+                    .map(Ok)
+                    .forward(futures_util::sink::unfold((), move |(), item| {
+                        let (shard_id, payload) = match item {
+                            (shard_id, Event::ShardPayload(payload)) => (shard_id, payload),
+                            _ => unimplemented!(),
+                        };
+
+                        let parsed = match serde_json::from_slice::<Value>(&payload.bytes) {
+                            Ok(data) => data,
+                            Err(err) => {
+                                warn!(err = as_error!(err); "Failed to deserialize JSON");
+                                return _FinishedFuture::new();
+                            }
+                        };
+
+                        let (data, name) = match (parsed.get("d"), parsed.get("t").map(Value::as_str)) {
+                            (Some(data), Some(Some(name))) => (data, name),
+                            _ => {
+                                warn!("Failed to parse event data");
+                                return _FinishedFuture::new();
+                            }
+                        };
+
+                        Python::with_gil(|py| {
+                            let py_data = match pythonize(py, &data) {
+                                Ok(py_data) => py_data,
+                                Err(err) => {
+                                    warn!(err = as_error!(err); "Failed to deserialize JSON");
+                                    return;
+                                }
+                            };
+
+                            // TODO: error handling
+                            call_soon_threadsafe
+                                .call1(py, (&consume_raw_event, name, py.None(), py_data))
+                                .unwrap();
+                        });
+
+                        _FinishedFuture::new()
+                    }))
+                    .await;
+                notify.notify_waiters();
+                *cluster_arc.write().await = None;
             });
 
+            cluster.up().await;
             Ok(())
         })
     }
@@ -443,78 +493,22 @@ impl Bot {
     }
 }
 
-struct EventManagerSink {
-    consume_raw_event: PyObject,
-}
+struct _FinishedFuture {}
 
-impl EventManagerSink {
-    fn new(consume_raw_event: PyObject) -> Self {
-        Self { consume_raw_event }
+impl _FinishedFuture {
+    fn new() -> Self {
+        Self {}
     }
 }
 
-impl Sink<(u64, Event)> for EventManagerSink {
-    type Error = ();
+impl std::future::Future for _FinishedFuture {
+    type Output = Result<(), !>;
 
-    fn poll_ready(
-        self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
-        std::task::Poll::Ready(Ok(()))
-    }
-
-    fn start_send(self: std::pin::Pin<&mut Self>, item: (u64, Event)) -> Result<(), Self::Error> {
-        let (shard_id, payload) = match item {
-            (shard_id, Event::ShardPayload(payload)) => (shard_id, payload),
-            _ => unimplemented!(),
-        };
-
-        let parsed = match serde_json::from_slice::<Value>(&payload.bytes) {
-            Ok(data) => data,
-            Err(err) => {
-                warn!(err = as_error!(err); "Failed to deserialize JSON");
-                return Ok(());
-            }
-        };
-
-        let (data, name) = match (parsed.get("d"), parsed.get("t").map(Value::as_str)) {
-            (Some(data), Some(Some(name))) => (data, name),
-            _ => {
-                warn!("Failed to parse event data");
-                return Ok(());
-            }
-        };
-
-        Python::with_gil(|py| {
-            let py_data = match pythonize(py, &data) {
-                Ok(py_data) => py_data,
-                Err(err) => {
-                    warn!(err = as_error!(err); "Failed to deserialize JSON");
-                    return;
-                }
-            };
-
-            // TODO: error handling
-            self.consume_raw_event.call1(py, (name, py.None(), py_data)).unwrap();
-        });
-
-        Ok(())
-    }
-
-    fn poll_flush(
-        self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
-        std::task::Poll::Ready(Ok(()))
-    }
-
-    fn poll_close(
-        self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
+    fn poll(self: std::pin::Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
         std::task::Poll::Ready(Ok(()))
     }
 }
+
 
 #[pyo3::pymodule]
 fn rukari(python: Python<'_>, module: &pyo3::types::PyModule) -> PyResult<()> {
