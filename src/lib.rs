@@ -33,7 +33,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use futures_util::{Sink, StreamExt};
-use log::{as_error, warn};
+use log::{as_error, debug, warn};
 use pyo3::conversion::ToPyObject;
 use pyo3::exceptions::PyValueError;
 use pyo3::types::{IntoPyDict, PyType};
@@ -415,7 +415,7 @@ impl Bot {
         pyo3_asyncio::tokio::future_into_py(py, async move {
             let mut cluster = Cluster::builder(token, intents)
                 .event_types(twilight_gateway::EventTypeFlags::SHARD_PAYLOAD)
-                .identify_properties(IdentifyProperties::new("hikari", "hikari", std::env::consts::OS));
+                .identify_properties(IdentifyProperties::new("rukari", "rukari", std::env::consts::OS));
 
             if let Some((from, to, total)) = shards {
                 cluster = cluster.shard_scheme(ShardScheme::Range { from, to, total });
@@ -446,7 +446,7 @@ impl Bot {
                         let (data, name) = match (parsed.get("d"), parsed.get("t").map(Value::as_str)) {
                             (Some(data), Some(Some(name))) => (data, name),
                             _ => {
-                                warn!("Failed to parse event data");
+                                debug!("Failed to parse event data; this is likely a control event like heartbeat ACK");
                                 return _FinishedFuture::new();
                             }
                         };
@@ -468,7 +468,8 @@ impl Bot {
 
                         _FinishedFuture::new()
                     }))
-                    .await;
+                    .await
+                    .unwrap(); // TODO: handle error
                 notify.notify_waiters();
                 *cluster_arc.write().await = None;
             });
@@ -513,11 +514,34 @@ impl std::future::Future for _FinishedFuture {
 fn rukari(python: Python<'_>, module: &pyo3::types::PyModule) -> PyResult<()> {
     let _ = pyo3_log::try_init();
 
+    module.add("__author__", "Faster Speeding")?;
+    module.add("__ci__", "https://github.com/FasterSpeeding/Rukari/actions")?;
+    module.add("__copyright__", "© 2022 Faster Speeding")?;
+    module.add("__coverage__", "https://codeclimate.com/github/FasterSpeeding/Rukari")?;
+    module.add("__docs__", "https://rukari.cursed.solutions/")?;
+    module.add("__email__", "lucina@lmbyrne.dev")?;
+    module.add("__issue_tracker__", "https://github.com/FasterSpeeding/Rukari/issues")?;
+    module.add("__license__", "BSD")?;
+    module.add("__url__", "https://github.com/FasterSpeeding/Rukari")?;
+    module.add("__version__", "0.1.0")?;
     module.add_class::<BotManager>()?;
     module.add_class::<Bot>()?;
+
     let bot_type = module.getattr("Bot")?.cast_as::<PyType>()?;
     let traits = python.import("hikari.traits")?;
 
+    assert!(
+        bot_type.is_subclass(traits.getattr("EventFactoryAware")?.cast_as::<PyType>()?)?,
+        "Bot isn't EventFactoryAware"
+    );
+    assert!(
+        bot_type.is_subclass(traits.getattr("EventManagerAware")?.cast_as::<PyType>()?)?,
+        "Bot isn't EventManagerAware"
+    );
+    assert!(
+        bot_type.is_subclass(traits.getattr("IntentsAware")?.cast_as::<PyType>()?)?,
+        "Bot isn't IntentsAware"
+    );
     assert!(
         bot_type.is_subclass(traits.getattr("RESTAware")?.cast_as::<PyType>()?)?,
         "Bot isn't RESTAware"
@@ -527,15 +551,11 @@ fn rukari(python: Python<'_>, module: &pyo3::types::PyModule) -> PyResult<()> {
         "Bot isn't Runnable"
     );
     // This would require being voice aware which probably isn't going to happen
-    // right now.
+    // for now.
     // assert!(
     //     bot_type.is_subclass(traits.getattr("ShardAware")?.cast_as::<PyType>()?)?
     // ,     "Bot isn't ShardAware"
     // );
-    assert!(
-        bot_type.is_subclass(traits.getattr("EventFactoryAware")?.cast_as::<PyType>()?)?,
-        "Bot isn't EventFactoryAware"
-    );
 
     Ok(())
 }
