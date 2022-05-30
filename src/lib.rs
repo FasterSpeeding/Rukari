@@ -34,16 +34,18 @@ use std::sync::Arc;
 
 use futures_util::{Sink, StreamExt};
 use log::{as_error, debug, warn};
-use pyo3::conversion::ToPyObject;
-use pyo3::exceptions::PyValueError;
+use pyo3::conversion::{FromPyObject, ToPyObject};
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::types::{IntoPyDict, PyType};
 use pyo3::{pyclass, pymethods, Py, PyAny, PyErr, PyObject, PyResult, Python};
+use pyo3_asyncio::tokio::future_into_py;
 use pythonize::pythonize;
 use serde_json::Value;
 use tokio::sync::{Notify, RwLock};
 use twilight_gateway::cluster::{Cluster, ShardScheme};
 use twilight_model::gateway::event::Event;
 use twilight_model::gateway::payload::outgoing::identify::IdentifyProperties;
+use twilight_model::gateway::payload::outgoing::{RequestGuildMembers, UpdatePresence, UpdateVoiceState};
 use twilight_model::gateway::Intents;
 
 pyo3::import_exception!(hikari, ComponentStateConflictError);
@@ -131,6 +133,27 @@ struct Bot {
     shards: Option<(u64, u64, u64)>,
     token: String,
 }
+
+impl Bot {
+    fn send<'p>(
+        &self,
+        py: Python<'p>,
+        id: u64,
+        message: twilight_gateway::shard::raw_message::Message,
+    ) -> PyResult<&'p PyAny> {
+        let cluster = self.cluster.clone();
+        future_into_py(py, async move {
+            cluster
+                .read()
+                .await
+                .ok_or_else(|| PyErr::new::<ComponentStateConflictError, _>(("Bot isn't running",)))?
+                .send(id, message)
+                .await
+                .map_err(|_| PyErr::new::<PyRuntimeError, _>(("Failed to send message",)))
+        })
+    }
+}
+
 
 #[pymethods]
 impl Bot {
@@ -352,16 +375,16 @@ impl Bot {
 
     fn close<'p>(&mut self, py: Python<'p>) -> PyResult<&'p PyAny> {
         if self.get_is_alive() {
-            return Err(PyErr::new::<ComponentStateConflictError, _>(("Cluster isn't running",)));
+            return Err(PyErr::new::<ComponentStateConflictError, _>(("Bot isn't running",)));
         }
 
         let cluster = self.cluster.clone();
         let notify = self.notify.clone();
-        pyo3_asyncio::tokio::future_into_py(py, async move {
+        future_into_py(py, async move {
             let mut cluster = cluster.write().await;
             cluster
                 .as_ref()
-                .ok_or_else(|| PyErr::new::<ComponentStateConflictError, _>(("Cluster isn't running",)))?
+                .ok_or_else(|| PyErr::new::<ComponentStateConflictError, _>(("Bot isn't running",)))?
                 .down();
 
             *cluster = None;
@@ -372,7 +395,7 @@ impl Bot {
 
     fn join<'p>(&self, py: Python<'p>) -> PyResult<&'p PyAny> {
         let notify = self.notify.clone();
-        pyo3_asyncio::tokio::future_into_py(py, async move {
+        future_into_py(py, async move {
             notify.notified().await;
             Ok(())
         })
@@ -380,9 +403,9 @@ impl Bot {
 
     fn run(&mut self, py: Python) -> PyResult<()> {
         if self.get_is_alive() {
-            return Err(PyErr::new::<ComponentStateConflictError, _>((
-                "Cluster is already running",
-            )));
+            return Err(PyErr::new::<ComponentStateConflictError, _>(
+                ("Bot is already running",),
+            ));
         }
 
         let run_until_complete = py
@@ -396,9 +419,9 @@ impl Bot {
 
     fn start<'p>(&mut self, py: Python<'p>) -> PyResult<&'p PyAny> {
         if self.get_is_alive() {
-            return Err(PyErr::new::<ComponentStateConflictError, _>((
-                "Cluster is already running",
-            )));
+            return Err(PyErr::new::<ComponentStateConflictError, _>(
+                ("Bot is already running",),
+            ));
         }
 
         let cluster_arc = self.cluster.clone();
@@ -412,7 +435,7 @@ impl Bot {
         let shards = self.shards;
         let token = self.token.clone();
 
-        pyo3_asyncio::tokio::future_into_py(py, async move {
+        future_into_py(py, async move {
             let mut cluster = Cluster::builder(token, intents)
                 .event_types(twilight_gateway::EventTypeFlags::SHARD_PAYLOAD)
                 .identify_properties(IdentifyProperties::new("rukari", "rukari", std::env::consts::OS));
@@ -483,14 +506,76 @@ impl Bot {
         py.None()
     }
 
-    fn update_presence(&self) {
+    #[args("*", status = "None", idle_since = "None", activity = "None", afk = "None")]
+    fn update_presence<'p>(
+        &'p self,
+        py: Python,
+        status: Option<PyObject>,
+        idle_since: Option<PyObject>,
+        activity: Option<PyObject>,
+        afk: Option<PyObject>,
+    ) -> PyResult<&'p PyAny> {
+        let undefined = py.import("hikari")?.getattr("UNDEFINED")?;
+        let foo: bool = _flatten_undefined(undefined, afk)
+
+        .map(bool::extract)
+        .unwrap_or_else(|| Ok(false))?;
+        self.send(
+            py,
+            0,
+            UpdatePresence::new(
+            Vec::new(),
+            _flatten_undefined(undefined, afk)
+                .map(bool::extract)
+                .unwrap_or_else(|| Ok(false))?,
+            _flatten_undefined(undefined, idle_since).map(|since| since),
+            _flatten_undefined(undefined, status),
+        ))
     }
 
-    fn update_voice_state(&self) {
-    }
+    // #[args(guild, channel, "*", self_mute = "None", self_deaf = "None")]
+    // fn update_voice_state(
+    //     &self,
+    //     guild: PyObject,
+    //     channel: Option<PyObject>,
+    //     self_mute: PyObject,
+    //     self_deaf: PyObject,
+    // ) -> PyResult<()> {
+    //     let cluster = self.cluster.clone();
+    //     let cluster = match cluster.read().await {
+    //         Some(cluster) => cluster,
+    //         None => return Err(PyErr::new::<ComponentStateConflictError, _>(("Bot
+    // isn't running",))),     };
+    //     let undefined = py.import("hikari")?.getattr("UNDEFINED")?;
+    //     Ok(())
+    // }
 
-    fn request_guild_members(&self) {
-    }
+    // #[args(
+    //     guild,
+    //     "*",
+    //     include_presences = "None",
+    //     query = "",
+    //     limit = "0",
+    //     users = "None",
+    //     nonce = "None"
+    // )]
+    // fn request_guild_members(
+    //     &self,
+    //     guild: PyObject,
+    //     include_presences: PyObject,
+    //     query: &str,
+    //     limit: u64,
+    //     users: PyObject,
+    //     nonce: PyObject,
+    // ) -> PyResult<()> {
+    //     let cluster = self.get_cluster()?;
+    //     let undefined = py.import("hikari")?.getattr("UNDEFINED")?;
+    //     Ok(())
+    // }
+}
+
+fn _flatten_undefined(undefined: &PyAny, value: Option<PyObject>) -> Option<PyObject> {
+    value.and_then(|value| if value.is(undefined) { None } else { Some(value) })
 }
 
 struct _FinishedFuture {}

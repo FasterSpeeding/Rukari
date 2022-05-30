@@ -54,7 +54,7 @@ class Bot(
     hikari.Runnable,
     hikari.EventFactoryAware,
 ):
-    __slots__ = ()
+    __slots__: _collections.Iterable[str]
 
     def __init__(
         token: str,
@@ -86,7 +86,7 @@ class Bot(
     ) -> None: ...
     async def update_voice_state(
         self,
-        guild: hikari.Snowflakeish | hikari.PartialGuild | None,
+        guild: hikari.Snowflakeish | hikari.PartialGuild,
         channel: hikari.Snowflakeish | hikari.GuildVoiceChannel | None,
         *,
         self_mute: bool | hikari.UndefinedType = hikari.UNDEFINED,
