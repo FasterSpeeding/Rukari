@@ -33,10 +33,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures_util::{Sink, StreamExt};
+use futures_util::{StreamExt};
 use log::{as_error, debug, warn};
 use pyo3::conversion::{FromPyObject, ToPyObject};
-use pyo3::exceptions::{PyNotImplementedError, PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyNotImplementedError, PyValueError};
 use pyo3::types::{IntoPyDict, PyType};
 use pyo3::{pyclass, pymethods, Py, PyAny, PyErr, PyObject, PyResult, Python};
 use pyo3_asyncio::tokio::future_into_py;
@@ -107,20 +107,22 @@ impl BotManager {
     }
 }
 
-#[derive(Clone)]
 #[pyclass]
 struct Shard {
     cluster: Arc<RwLock<Option<Arc<Cluster>>>>,
+    intents: u64,
+    shard_count: u64,
     shard_id: u64,
 }
 
 impl Shard {
-    fn new(cluster: Arc<RwLock<Option<Arc<Cluster>>>>, shard_id: u64) -> Self {
-        Self { cluster, shard_id }
-    }
-
-    fn get_shard(&self) -> Option<&twilight_gateway::Shard> {
-        self.cluster.try_read().map(|cluster| cluster.shard(self.shard_id))
+    fn new(cluster: Arc<RwLock<Option<Arc<Cluster>>>>, shard_count: u64, shard_id: u64, intents: Intents) -> Self {
+        Self {
+            cluster,
+            intents: intents.bits(),
+            shard_count,
+            shard_id,
+        }
     }
 }
 
@@ -128,10 +130,19 @@ impl Shard {
 impl Shard {
     #[getter(heartbeat_latency)]
     fn get_heartbeat_latency(&self) -> f64 {
-        self.get_shard()
-            .info()
-            .ok()
-            .and_then(|info| info.latency().recent().back().map(Duration::as_secs_f64))
+        let cluster = match self.cluster.try_read() {
+            Ok(cluster) if cluster.is_some() => cluster.clone().unwrap(),
+            _ => return f64::NAN,
+        };
+
+        cluster
+            .shard(self.shard_id)
+            .and_then(|shard| {
+                shard
+                    .info()
+                    .ok()
+                    .and_then(|info| info.latency().recent().back().map(Duration::as_secs_f64))
+            })
             .unwrap_or(f64::NAN)
     }
 
@@ -143,7 +154,7 @@ impl Shard {
     #[getter(intents)]
     fn get_intents<'p>(&self, py: Python<'p>) -> PyResult<&'p PyAny> {
         py.import("hikari")?
-            .call_method1("Intents", (self.get_shard().config().intents().bits().to_object(py),))
+            .call_method1("Intents", (self.intents.to_object(py),))
     }
 
     #[getter(is_alive)]
@@ -153,7 +164,7 @@ impl Shard {
 
     #[getter(shard_count)]
     fn get_shard_count(&self) -> u64 {
-        self.cluster.config().shard_scheme().total()
+        self.shard_count
     }
 
     fn get_get_user_id<'p>(&self, py: Python<'p>) -> PyResult<&'p PyAny> {
@@ -270,7 +281,7 @@ struct Bot {
     notify: Arc<Notify>,
     refs: Py<_BotRefs>,
     shard_config: Option<ShardScheme>,
-    shards: Arc<RwLock<HashMap<u64, Shard>>>,
+    shards: Arc<RwLock<HashMap<u64, Py<Shard>>>>,
     token: String,
 }
 
@@ -404,20 +415,7 @@ impl Bot {
     }
 
     #[getter(shards)]
-    fn get_shards(&self, py: Python) -> HashMap<u64, Shard> {
-        // let foo = self
-        //     .shards
-        //     .try_read()
-        //     .map(|map| {
-        //         (*map)
-        //             .into_iter()
-        //             .map(|(shard_id, shard)| (shard_id, shard.to_object(py)))
-        //             .collect()
-        //             .into_py_dict(py)
-        //     })
-        //     .unwrap_or_else(|| pyo3::types::PyDict::new(py));
-        // foo.bar;
-        // foo
+    fn get_shards(&self, py: Python) -> HashMap<u64, Py<Shard>> {
         self.shards.try_read().map(|map| map.clone()).unwrap_or_default()
     }
 
@@ -590,11 +588,21 @@ impl Bot {
             .shard_config
             .clone()
             .unwrap_or_else(|| _fetch_shards_info(&self.token).unwrap());
+        let shard_count = shard_config.total();
         let shards = self.shards.clone();
+        let mut shards_write: HashMap<u64, Py<Shard>> = HashMap::new();
         let token = self.token.clone();
 
+        for shard_id in shard_config.iter() {
+            let shard = Shard::new(cluster_arc.clone(), shard_count, shard_id, intents);
+            shards_write.insert(shard_id, Py::new(py, shard)?);
+        }
+
         future_into_py(py, async move {
-            let mut cluster = Cluster::builder(token, intents)
+            *shards.write().await = shards_write;
+            let shards_read = shards.read().await.clone();
+
+            let cluster = Cluster::builder(token, intents)
                 .event_types(twilight_gateway::EventTypeFlags::SHARD_PAYLOAD)
                 .identify_properties(IdentifyProperties::new("rukari", "rukari", std::env::consts::OS))
                 .shard_scheme(shard_config);
@@ -604,19 +612,6 @@ impl Bot {
 
             let cluster = Arc::new(cluster);
             *cluster_arc.write().await = Some(cluster.clone());
-
-            let mut shards_write = shards.write().await;
-            // let mut shards_read = HashMap::new();
-
-            for shard_id in cluster.shards().map(|shard| shard.config().shard()[0]) {
-                let shard = Shard::new(cluster.clone(), shard_id);
-                shards_write.insert(shard_id, shard);
-                // shards_read.insert(shard_id, Py::new(py, shard)?);
-            }
-
-            // let shards_read = Arc::new(shards_write.clone());
-            let shards_read = shards_write.clone();
-            drop(shards_write);
 
             tokio::spawn(async move {
                 events
@@ -655,8 +650,7 @@ impl Bot {
 
                             // TODO: error handling
                             call_soon_threadsafe
-                                // shard.clone_ref(py) Py::new(py, shard).unwrap()
-                                .call1(py, (&consume_raw_event, name, py.None(), py_data))
+                                .call1(py, (&consume_raw_event, name, shard.clone_ref(py), py_data))
                                 .unwrap();
                         });
 
@@ -784,7 +778,7 @@ fn rukari(python: Python<'_>, module: &pyo3::types::PyModule) -> PyResult<()> {
     hikari
         .getattr("api")?
         .getattr("GatewayShard")?
-        .call_method1("register", (PyType::new::<Shard>(python),));
+        .call_method1("register", (PyType::new::<Shard>(python),))?;
 
     module.add("__author__", "Faster Speeding")?;
     module.add("__ci__", "https://github.com/FasterSpeeding/Rukari/actions")?;

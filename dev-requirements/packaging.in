@@ -1,0 +1,2 @@
+maturin==0.12.18
+pip-tools==6.6.2
