@@ -784,6 +784,7 @@ dependencies = [
  "pyo3-asyncio",
  "pyo3-log",
  "pythonize",
+ "serde",
  "serde_json",
  "tokio",
  "twilight-gateway",

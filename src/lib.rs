@@ -31,15 +31,17 @@
 #![feature(never_type)]
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures_util::{Sink, StreamExt};
 use log::{as_error, debug, warn};
 use pyo3::conversion::{FromPyObject, ToPyObject};
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyNotImplementedError, PyRuntimeError, PyValueError};
 use pyo3::types::{IntoPyDict, PyType};
 use pyo3::{pyclass, pymethods, Py, PyAny, PyErr, PyObject, PyResult, Python};
 use pyo3_asyncio::tokio::future_into_py;
 use pythonize::pythonize;
+use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::{Notify, RwLock};
 use twilight_gateway::cluster::{Cluster, ShardScheme};
@@ -87,6 +89,125 @@ impl BotManager {
     }
 }
 
+#[derive(Clone)]
+#[pyclass]
+struct Shard {
+    cluster: Arc<Cluster>,
+    shard_id: u64,
+}
+
+impl Shard {
+    fn new(cluster: Arc<Cluster>, shard_id: u64) -> Self {
+        Self { cluster, shard_id }
+    }
+
+    fn get_shard(&self) -> &twilight_gateway::Shard {
+        self.cluster.shard(self.shard_id).unwrap()
+    }
+}
+
+#[pymethods]
+impl Shard {
+    #[getter(heartbeat_latency)]
+    fn get_heartbeat_latency(&self) -> f64 {
+        self.get_shard()
+            .info()
+            .ok()
+            .and_then(|info| info.latency().recent().back().map(Duration::as_secs_f64))
+            .unwrap_or(f64::NAN)
+    }
+
+    #[getter(id)]
+    fn get_id(&self) -> u64 {
+        self.shard_id
+    }
+
+    #[getter(intents)]
+    fn get_intents<'p>(&self, py: Python<'p>) -> PyResult<&'p PyAny> {
+        py.import("hikari")?
+            .call_method1("Intents", (self.get_shard().config().intents().bits().to_object(py),))
+    }
+
+    #[getter(is_alive)]
+    fn is_alive(&self) -> bool {
+        true
+    }
+
+    #[getter(shard_count)]
+    fn get_shard_count(&self) -> u64 {
+        self.cluster.config().shard_scheme().total()
+    }
+
+    fn get_get_user_id<'p>(&self, py: Python<'p>) -> PyResult<&'p PyAny> {
+        future_into_py::<_, ()>(
+            py,
+            async move { Err(PyNotImplementedError::new_err("Not implemented")) },
+        )
+    }
+
+    fn close(&self) -> PyResult<()> {
+        Err(PyNotImplementedError::new_err(
+            "Cannot directly close this shard implementation",
+        ))
+    }
+
+    fn join(&self) -> PyResult<()> {
+        Err(PyNotImplementedError::new_err(
+            "Cannot directly join this shard implementation",
+        ))
+    }
+
+    fn start(&self) -> PyResult<()> {
+        Err(PyNotImplementedError::new_err(
+            "Cannot directly start this shard implementation",
+        ))
+    }
+
+    #[args("*", status = "None", idle_since = "None", activity = "None", afk = "None")]
+    fn update_presence<'p>(
+        &'p self,
+        py: Python,
+        status: Option<PyObject>,
+        idle_since: Option<Option<PyObject>>,
+        activity: Option<Option<PyObject>>,
+        afk: Option<PyObject>,
+    ) -> PyResult<()> {
+        Ok(())
+    }
+
+    #[args(guild, channel, "*", self_mute = "None", self_deaf = "None")]
+    fn update_voice_state(
+        &self,
+        guild: PyObject,
+        channel: Option<PyObject>,
+        self_mute: Option<PyObject>,
+        self_deaf: Option<PyObject>,
+    ) -> PyResult<()> {
+        Ok(())
+    }
+
+    #[args(
+        guild,
+        "*",
+        include_presences = "None",
+        query = "\"\"",
+        limit = "0",
+        users = "None",
+        nonce = "None"
+    )]
+    fn request_guild_members(
+        &self,
+        guild: PyObject,
+        include_presences: Option<PyObject>,
+        query: &str,
+        limit: u64,
+        users: Option<PyObject>,
+        nonce: Option<PyObject>,
+    ) -> PyResult<()> {
+        Ok(())
+    }
+}
+
 #[pyclass(unsendable)]
 struct _BotRefs {
     entity_factory: Option<PyObject>,
@@ -130,28 +251,25 @@ struct Bot {
     intents_py: PyObject,
     notify: Arc<Notify>,
     refs: Py<_BotRefs>,
-    shards: Option<(u64, u64, u64)>,
+    shard_config: Option<(u64, u64, u64)>,
+    shards: Arc<RwLock<HashMap<u64, Py<Shard>>>>,
     token: String,
 }
 
 impl Bot {
-    fn send<'p>(
-        &self,
-        py: Python<'p>,
-        id: u64,
-        message: twilight_gateway::shard::raw_message::Message,
-    ) -> PyResult<&'p PyAny> {
-        let cluster = self.cluster.clone();
-        future_into_py(py, async move {
-            cluster
-                .read()
-                .await
-                .ok_or_else(|| PyErr::new::<ComponentStateConflictError, _>(("Bot isn't running",)))?
-                .send(id, message)
-                .await
-                .map_err(|_| PyErr::new::<PyRuntimeError, _>(("Failed to send message",)))
-        })
-    }
+    // async fn send<'p>(
+    //     &self,
+    //     cluster: Arc<RwLock<Option<Arc<Cluster>>>>,
+    //     id: u64,
+    //     message: twilight_gateway::shard::raw_message::Message,
+    // ) -> PyResult<()> {
+    //     cluster
+    //         .read()
+    //         .await
+    //         .ok_or_else(|| PyErr::new::<ComponentStateConflictError, _>(("Bot
+    // isn't running",)))?         .send(id, message)
+    //         .await
+    // .map_err(|_| PyRuntimeError::new_err("Failed to send message") }
 }
 
 
@@ -192,7 +310,7 @@ impl Bot {
                 let latency = shard
                     .info()
                     .ok()
-                    .and_then(|info| info.latency().recent().back().map(|duration| duration.as_secs_f64()))
+                    .and_then(|info| info.latency().recent().back().map(Duration::as_secs_f64))
                     .unwrap_or(f64::NAN);
 
                 (shard.config().shard()[0], latency)
@@ -212,7 +330,7 @@ impl Bot {
             .unwrap()
             .shards()
             .filter_map(|shard| shard.info().ok())
-            .filter_map(|info| info.latency().recent().back().map(std::time::Duration::as_secs_f64))
+            .filter_map(|info| info.latency().recent().back().map(Duration::as_secs_f64))
             .collect::<Vec<f64>>();
 
         let len = latencies.len();
@@ -230,8 +348,10 @@ impl Bot {
 
     #[getter(is_alive)]
     fn get_is_alive(&self) -> bool {
-        let read = self.cluster.try_read();
-        read.is_err() || read.unwrap().is_some()
+        self.cluster
+            .try_read()
+            .map(|cluster| cluster.is_some())
+            .unwrap_or(false)
     }
 
     #[getter(intents)]
@@ -266,8 +386,21 @@ impl Bot {
     }
 
     #[getter(shards)]
-    fn get_shards(&self, py: Python) -> PyObject {
-        pyo3::types::PyDict::new(py).to_object(py)
+    fn get_shards(&self, py: Python) -> HashMap<u64, Py<Shard>> {
+        // let foo = self
+        //     .shards
+        //     .try_read()
+        //     .map(|map| {
+        //         (*map)
+        //             .into_iter()
+        //             .map(|(shard_id, shard)| (shard_id, shard.to_object(py)))
+        //             .collect()
+        //             .into_py_dict(py)
+        //     })
+        //     .unwrap_or_else(|| pyo3::types::PyDict::new(py));
+        // foo.bar;
+        // foo
+        self.shards.try_read().map(|map| map.clone()).unwrap_or_default()
     }
 
     #[new]
@@ -368,7 +501,8 @@ impl Bot {
             intents_py,
             notify: Arc::new(Notify::new()),
             refs,
-            shards,
+            shards: Arc::new(RwLock::new(HashMap::new())),
+            shard_config: shards,
             token,
         })
     }
@@ -432,7 +566,8 @@ impl Bot {
         let consume_raw_event = self.get_event_manager(py).getattr(py, "consume_raw_event")?;
         let intents = self.intents;
         let notify = self.notify.clone();
-        let shards = self.shards;
+        let shard_config = self.shard_config;
+        let shards = self.shards.clone();
         let token = self.token.clone();
 
         future_into_py(py, async move {
@@ -440,7 +575,7 @@ impl Bot {
                 .event_types(twilight_gateway::EventTypeFlags::SHARD_PAYLOAD)
                 .identify_properties(IdentifyProperties::new("rukari", "rukari", std::env::consts::OS));
 
-            if let Some((from, to, total)) = shards {
+            if let Some((from, to, total)) = shard_config {
                 cluster = cluster.shard_scheme(ShardScheme::Range { from, to, total });
             }
 
@@ -511,67 +646,74 @@ impl Bot {
         &'p self,
         py: Python,
         status: Option<PyObject>,
-        idle_since: Option<PyObject>,
-        activity: Option<PyObject>,
+        idle_since: Option<Option<PyObject>>,
+        activity: Option<Option<PyObject>>,
         afk: Option<PyObject>,
-    ) -> PyResult<&'p PyAny> {
-        let undefined = py.import("hikari")?.getattr("UNDEFINED")?;
-        let foo: bool = _flatten_undefined(undefined, afk)
-
-        .map(bool::extract)
-        .unwrap_or_else(|| Ok(false))?;
-        self.send(
-            py,
-            0,
-            UpdatePresence::new(
-            Vec::new(),
-            _flatten_undefined(undefined, afk)
-                .map(bool::extract)
-                .unwrap_or_else(|| Ok(false))?,
-            _flatten_undefined(undefined, idle_since).map(|since| since),
-            _flatten_undefined(undefined, status),
-        ))
+    ) -> PyResult<()> {
+        Ok(())
+        // let cluster = self.cluster.clone();
+        // let undefined = py.import("hikari")?.getattr("UNDEFINED")?;
+        // future_into_py(
+        //     py,
+        //     self.send(
+        //         &cluster,
+        //         0,
+        //         UpdatePresence::new(
+        //             Vec::new(),
+        //             _flatten_undefined(undefined, afk)
+        //                 .map(bool::extract)
+        //                 .unwrap_or_else(|| Ok(false))?,
+        //             _flatten_undefined(undefined, idle_since).map(|since|
+        // since),             _flatten_undefined(undefined, status),
+        //         ),
+        //     ),
+        // )
     }
 
-    // #[args(guild, channel, "*", self_mute = "None", self_deaf = "None")]
-    // fn update_voice_state(
-    //     &self,
-    //     guild: PyObject,
-    //     channel: Option<PyObject>,
-    //     self_mute: PyObject,
-    //     self_deaf: PyObject,
-    // ) -> PyResult<()> {
-    //     let cluster = self.cluster.clone();
-    //     let cluster = match cluster.read().await {
-    //         Some(cluster) => cluster,
-    //         None => return Err(PyErr::new::<ComponentStateConflictError, _>(("Bot
-    // isn't running",))),     };
-    //     let undefined = py.import("hikari")?.getattr("UNDEFINED")?;
-    //     Ok(())
-    // }
+    #[args(guild, channel, "*", self_mute = "None", self_deaf = "None")]
+    fn update_voice_state(
+        &self,
+        guild: PyObject,
+        channel: Option<PyObject>,
+        self_mute: Option<PyObject>,
+        self_deaf: Option<PyObject>,
+    ) -> PyResult<()> {
+        Ok(())
+        // let cluster = self.cluster.clone();
+        // let undefined = py.import("hikari")?.getattr("UNDEFINED")?;
+        // future_into_py(
+        //     py,
+        //     self.send(
+        //         &cluster,
+    }
 
-    // #[args(
-    //     guild,
-    //     "*",
-    //     include_presences = "None",
-    //     query = "",
-    //     limit = "0",
-    //     users = "None",
-    //     nonce = "None"
-    // )]
-    // fn request_guild_members(
-    //     &self,
-    //     guild: PyObject,
-    //     include_presences: PyObject,
-    //     query: &str,
-    //     limit: u64,
-    //     users: PyObject,
-    //     nonce: PyObject,
-    // ) -> PyResult<()> {
-    //     let cluster = self.get_cluster()?;
-    //     let undefined = py.import("hikari")?.getattr("UNDEFINED")?;
-    //     Ok(())
-    // }
+    #[args(
+        guild,
+        "*",
+        include_presences = "None",
+        query = "\"\"",
+        limit = "0",
+        users = "None",
+        nonce = "None"
+    )]
+    fn request_guild_members(
+        &self,
+        guild: PyObject,
+        include_presences: Option<PyObject>,
+        query: &str,
+        limit: u64,
+        users: Option<PyObject>,
+        nonce: Option<PyObject>,
+    ) -> PyResult<()> {
+        Ok(())
+        //     let cluster = self.cluster.clone();
+        //     let undefined = py.import("hikari")?.getattr("UNDEFINED")?;
+        //     future_into_py(
+        //         py,
+        //         self.send(
+        //             &cluster,
+        //             RequestGuildMembers
+    }
 }
 
 fn _flatten_undefined(undefined: &PyAny, value: Option<PyObject>) -> Option<PyObject> {
@@ -599,6 +741,14 @@ impl std::future::Future for _FinishedFuture {
 fn rukari(python: Python<'_>, module: &pyo3::types::PyModule) -> PyResult<()> {
     let _ = pyo3_log::try_init();
 
+    let bot_type = PyType::new::<Bot>(python);
+    let hikari = python.import("hikari")?;
+    let traits = hikari.getattr("traits")?;
+    hikari
+        .getattr("api")?
+        .getattr("GatewayShard")?
+        .call_method1("register", (PyType::new::<Shard>(python),));
+
     module.add("__author__", "Faster Speeding")?;
     module.add("__ci__", "https://github.com/FasterSpeeding/Rukari/actions")?;
     module.add("__copyright__", "© 2022 Faster Speeding")?;
@@ -611,9 +761,6 @@ fn rukari(python: Python<'_>, module: &pyo3::types::PyModule) -> PyResult<()> {
     module.add("__version__", "0.1.0")?;
     module.add_class::<BotManager>()?;
     module.add_class::<Bot>()?;
-
-    let bot_type = module.getattr("Bot")?.cast_as::<PyType>()?;
-    let traits = python.import("hikari.traits")?;
 
     assert!(
         bot_type.is_subclass(traits.getattr("EventFactoryAware")?.cast_as::<PyType>()?)?,
