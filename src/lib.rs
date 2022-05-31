@@ -73,6 +73,24 @@ fn _to_intents(intents: Option<u64>) -> PyResult<Intents> {
         .ok_or_else(|| PyValueError::new_err("Invalid intent(s) passed"))
 }
 
+fn _fetch_shards_info(token: &str) -> Result<ShardScheme, Box<dyn std::error::Error>> {
+    tokio::runtime::Builder::new_current_thread().build()?.block_on(async {
+        twilight_http::Client::new(token.to_string())
+            .gateway()
+            .authed()
+            .exec()
+            .await?
+            .model()
+            .await
+            .map(|gateway| ShardScheme::Range {
+                from: 0,
+                to: gateway.shards - 1,
+                total: gateway.shards,
+            })
+            .map_err(Box::from)
+    })
+}
+
 #[pymethods]
 impl BotManager {
     #[new]
@@ -92,17 +110,17 @@ impl BotManager {
 #[derive(Clone)]
 #[pyclass]
 struct Shard {
-    cluster: Arc<Cluster>,
+    cluster: Arc<RwLock<Option<Arc<Cluster>>>>,
     shard_id: u64,
 }
 
 impl Shard {
-    fn new(cluster: Arc<Cluster>, shard_id: u64) -> Self {
+    fn new(cluster: Arc<RwLock<Option<Arc<Cluster>>>>, shard_id: u64) -> Self {
         Self { cluster, shard_id }
     }
 
-    fn get_shard(&self) -> &twilight_gateway::Shard {
-        self.cluster.shard(self.shard_id).unwrap()
+    fn get_shard(&self) -> Option<&twilight_gateway::Shard> {
+        self.cluster.try_read().map(|cluster| cluster.shard(self.shard_id))
     }
 }
 
@@ -251,8 +269,8 @@ struct Bot {
     intents_py: PyObject,
     notify: Arc<Notify>,
     refs: Py<_BotRefs>,
-    shard_config: Option<(u64, u64, u64)>,
-    shards: Arc<RwLock<HashMap<u64, Py<Shard>>>>,
+    shard_config: Option<ShardScheme>,
+    shards: Arc<RwLock<HashMap<u64, Shard>>>,
     token: String,
 }
 
@@ -386,7 +404,7 @@ impl Bot {
     }
 
     #[getter(shards)]
-    fn get_shards(&self, py: Python) -> HashMap<u64, Py<Shard>> {
+    fn get_shards(&self, py: Python) -> HashMap<u64, Shard> {
         // let foo = self
         //     .shards
         //     .try_read()
@@ -495,6 +513,7 @@ impl Bot {
             .call_method1("Intents", (intents.bits().to_object(py),))?
             .to_object(py);
 
+
         Ok(Self {
             cluster: Arc::new(RwLock::new(None)),
             intents,
@@ -502,7 +521,7 @@ impl Bot {
             notify: Arc::new(Notify::new()),
             refs,
             shards: Arc::new(RwLock::new(HashMap::new())),
-            shard_config: shards,
+            shard_config: shards.map(|(from, to, total)| ShardScheme::Range { from, to, total }),
             token,
         })
     }
@@ -566,23 +585,38 @@ impl Bot {
         let consume_raw_event = self.get_event_manager(py).getattr(py, "consume_raw_event")?;
         let intents = self.intents;
         let notify = self.notify.clone();
-        let shard_config = self.shard_config;
+        // TODO: error handling
+        let shard_config = self
+            .shard_config
+            .clone()
+            .unwrap_or_else(|| _fetch_shards_info(&self.token).unwrap());
         let shards = self.shards.clone();
         let token = self.token.clone();
 
         future_into_py(py, async move {
             let mut cluster = Cluster::builder(token, intents)
                 .event_types(twilight_gateway::EventTypeFlags::SHARD_PAYLOAD)
-                .identify_properties(IdentifyProperties::new("rukari", "rukari", std::env::consts::OS));
-
-            if let Some((from, to, total)) = shard_config {
-                cluster = cluster.shard_scheme(ShardScheme::Range { from, to, total });
-            }
+                .identify_properties(IdentifyProperties::new("rukari", "rukari", std::env::consts::OS))
+                .shard_scheme(shard_config);
 
             // TODO: handle error
             let (cluster, events) = cluster.build().await.unwrap();
+
             let cluster = Arc::new(cluster);
             *cluster_arc.write().await = Some(cluster.clone());
+
+            let mut shards_write = shards.write().await;
+            // let mut shards_read = HashMap::new();
+
+            for shard_id in cluster.shards().map(|shard| shard.config().shard()[0]) {
+                let shard = Shard::new(cluster.clone(), shard_id);
+                shards_write.insert(shard_id, shard);
+                // shards_read.insert(shard_id, Py::new(py, shard)?);
+            }
+
+            // let shards_read = Arc::new(shards_write.clone());
+            let shards_read = shards_write.clone();
+            drop(shards_write);
 
             tokio::spawn(async move {
                 events
@@ -593,6 +627,7 @@ impl Bot {
                             _ => unimplemented!(),
                         };
 
+                        let shard = shards_read.get(&shard_id).unwrap();
                         let parsed = match serde_json::from_slice::<Value>(&payload.bytes) {
                             Ok(data) => data,
                             Err(err) => {
@@ -620,6 +655,7 @@ impl Bot {
 
                             // TODO: error handling
                             call_soon_threadsafe
+                                // shard.clone_ref(py) Py::new(py, shard).unwrap()
                                 .call1(py, (&consume_raw_event, name, py.None(), py_data))
                                 .unwrap();
                         });
@@ -630,6 +666,7 @@ impl Bot {
                     .unwrap(); // TODO: handle error
                 notify.notify_waiters();
                 *cluster_arc.write().await = None;
+                shards.write().await.clear();
             });
 
             cluster.up().await;
