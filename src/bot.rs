@@ -130,7 +130,7 @@ impl Bot {
             .try_read()
             .map_err(|_| PyErr::new::<ComponentStateConflictError, _>(("Bot isn't running",)))?
             .get(&shard_id)
-            .map(|v| v.clone_ref(py))
+            .map(|value| value.clone_ref(py))
             .ok_or_else(|| PyValueError::new_err(("Shard not found",)))
     }
 }
@@ -187,9 +187,10 @@ impl Bot {
             .cluster
             .try_read()
             .ok()
-            .and_then(|cluster| {
-                cluster.as_ref().map(|c| {
-                    c.shards()
+            .and_then(|read| {
+                read.as_ref().map(|cluster| {
+                    cluster
+                        .shards()
                         .filter_map(|shard| shard.info().ok())
                         .filter_map(|info| info.latency().recent().back().map(Duration::as_secs_f64))
                         .collect::<Vec<f64>>()
@@ -414,11 +415,6 @@ impl Bot {
         }
 
         let cluster_arc = self.cluster.clone();
-        // let loads = py.import("json")?.getattr("loads")?.to_object(py);
-        let call_soon_threadsafe = pyo3_asyncio::get_running_loop(py)?
-            .getattr("call_soon_threadsafe")?
-            .to_object(py);
-
         let consume_raw_event = self.get_event_manager(py).getattr(py, "consume_raw_event")?;
         let gateway_url = self.gateway_url.clone();
         let intents = self.intents;
@@ -426,107 +422,37 @@ impl Bot {
         // TODO: error handling
         let shard_config = self
             .shard_config
-            .clone()
-            .unwrap_or_else(|| crate::fetch_shards_info(&self.token).unwrap());
-        self.shard_config = self.shard_config.clone();
-        let shard_count = shard_config.total();
+            .get_or_insert_with(|| crate::fetch_shards_info(&self.token).unwrap())
+            .clone();
         let shards = self.shards.clone();
-        let mut shards_write: HashMap<u64, Py<Shard>> = HashMap::new();
         let token = self.token.clone();
-
-        for shard_id in shard_config.iter() {
-            let shard = Shard::new(cluster_arc.clone(), shard_count, shard_id, intents);
-            shards_write.insert(shard_id, Py::new(py, shard)?);
-        }
+        let shards_ = shard_config
+            .iter()
+            .map(|id| {
+                let shard = Py::new(py, Shard::new(cluster_arc.clone(), shard_config.total(), id, intents))?;
+                Ok((id, shard))
+            })
+            .collect::<PyResult<HashMap<u64, Py<Shard>>>>()?;
 
         future_into_py(py, async move {
-            *shards.write().await = shards_write;
-            let shards_read = shards.read().await.clone();
+            *shards.write().await = shards_;
 
-            let cluster = Cluster::builder(token, intents)
+            // TODO: handle error
+            let (cluster, events) = Cluster::builder(token, intents)
                 .event_types(twilight_gateway::EventTypeFlags::SHARD_PAYLOAD)
                 .identify_properties(IdentifyProperties::new("rukari", "rukari", std::env::consts::OS))
                 .shard_scheme(shard_config)
-                .gateway_url(gateway_url);
-
-            // TODO: handle error
-            let (cluster, events) = cluster.build().await.unwrap();
+                .gateway_url(gateway_url)
+                .build()
+                .await
+                .unwrap();
 
             let cluster = Arc::new(cluster);
             *cluster_arc.write().await = Some(cluster.clone());
 
+            let handle_event = make_event_handler(shards.clone(), consume_raw_event).await?;
             tokio::spawn(async move {
-                events
-                    .for_each_concurrent(None, move |item| {
-                        let (shard_id, payload) = match item {
-                            (shard_id, Event::ShardPayload(payload)) => (shard_id, payload),
-                            _ => unimplemented!(),
-                        };
-
-                        let shard = shards_read.get(&shard_id).unwrap();
-                        let parsed = match serde_json::from_slice::<Value>(&payload.bytes) {
-                            Ok(data) => data,
-                            Err(err) => {
-                                warn!(err = as_error!(err); "Failed to deserialize JSON");
-                                return _FinishedFuture::new();
-                            }
-                        };
-
-                        let (data, name) = match (parsed.get("d"), parsed.get("t").map(Value::as_str)) {
-                            (Some(data), Some(Some(name))) => (data, name),
-                            _ => {
-                                debug!(
-                                    "Failed to parse event data; this is likely a control event
-                        like heartbeat ACK"
-                                );
-                                return _FinishedFuture::new();
-                            }
-                        };
-                        Python::with_gil(|py| {
-                            let data = match pythonize::pythonize(py, &data) {
-                                Ok(data) => data,
-                                Err(err) => {
-                                    warn!(err = as_error!(err); "Failed to deserialize JSON");
-                                    return;
-                                }
-                            };
-                            // let (data, name) = match loads
-                            //     .as_ref(py)
-                            //     .call1((PyBytes::new(py, &payload.bytes),))
-                            //     .map(|data| (data.get_item("d"), data.get_item("t")))
-                            // {
-                            //     Ok((Ok(data), Ok(name))) if !name.is_none() => (data, name),
-                            //     Err(err) | Ok((Err(err), _)) | Ok((_, Err(err))) => {
-                            //         debug!(
-                            //             err = as_error!(err); "Failed to parse event data, it's likely a
-                            // control event"         );
-                            //         return;
-                            //     }
-                            //     _ => return,
-                            // };
-                            // let (data, name) = match (parsed.get("d"),
-                            // parsed.get("t").map(Value::as_str)) {
-                            //     (Some(data), Some(Some(name))) => (data, name),
-                            //     _ => {
-                            //         debug!(
-                            //             "Failed to parse event data; this is likely a control event like
-                            // heartbeat ACK"         );
-                            //         return _FinishedFuture::new();
-                            //     }
-                            // };
-
-                            // TODO: error handling
-                            if let Err(err) =
-                                call_soon_threadsafe.call1(py, (&consume_raw_event, name, shard.clone_ref(py), data))
-                            {
-                                warn!(err = as_error!(err);
-                                   "Failed to call call_soon_threadsafe");
-                            }
-                        });
-
-                        _FinishedFuture::new()
-                    })
-                    .await;
+                events.for_each_concurrent(None, handle_event).await;
                 notify.notify_waiters();
                 *cluster_arc.write().await = None;
                 shards.write().await.clear();
@@ -610,4 +536,56 @@ impl Bot {
             nonce,
         )
     }
+}
+
+async fn make_event_handler(
+    shards: Arc<RwLock<HashMap<u64, Py<Shard>>>>,
+    consume_raw_event: PyObject,
+) -> PyResult<impl FnMut((u64, Event)) -> _FinishedFuture> {
+    let call_soon_threadsafe = Python::with_gil(|py| {
+        pyo3_asyncio::get_running_loop(py)?
+            .getattr("call_soon_threadsafe")
+            .map(|value| value.to_object(py))
+    })?;
+    let shards_read = shards.read().await.clone();
+
+    Ok(move |item| {
+        let (shard_id, payload) = match item {
+            (shard_id, Event::ShardPayload(payload)) => (shard_id, payload),
+            _ => unimplemented!(),
+        };
+
+        let shard = shards_read.get(&shard_id).unwrap();
+        let parsed = match serde_json::from_slice::<Value>(&payload.bytes) {
+            Ok(data) => data,
+            Err(err) => {
+                warn!(err = as_error!(err); "Failed to deserialize JSON");
+                return _FinishedFuture::new();
+            }
+        };
+
+        let (data, name) = match (parsed.get("d"), parsed.get("t").map(Value::as_str)) {
+            (Some(data), Some(Some(name))) => (data, name),
+            _ => {
+                debug!("Failed to parse event data; this is likely a control event like heartbeat ACK");
+                return _FinishedFuture::new();
+            }
+        };
+        Python::with_gil(|py| {
+            let data = match pythonize::pythonize(py, &data) {
+                Ok(data) => data,
+                Err(err) => {
+                    warn!(err = as_error!(err); "Failed to deserialize JSON");
+                    return;
+                }
+            };
+
+            // TODO: error handling
+            if let Err(err) = call_soon_threadsafe.call1(py, (&consume_raw_event, name, shard.clone_ref(py), data)) {
+                warn!(err = as_error!(err); "Failed to call call_soon_threadsafe");
+            }
+        });
+
+        _FinishedFuture::new()
+    })
 }
