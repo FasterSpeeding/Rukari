@@ -29,6 +29,7 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 use std::collections::HashMap;
+use std::future::ready;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -48,23 +49,6 @@ use twilight_model::gateway::Intents;
 use crate::shard::Shard;
 
 pyo3::import_exception!(hikari, ComponentStateConflictError);
-
-
-struct _FinishedFuture {}
-
-impl _FinishedFuture {
-    fn new() -> Self {
-        Self {}
-    }
-}
-
-impl std::future::Future for _FinishedFuture {
-    type Output = ();
-
-    fn poll(self: std::pin::Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
-        std::task::Poll::Ready(())
-    }
-}
 
 
 #[pyclass(unsendable)]
@@ -541,7 +525,7 @@ impl Bot {
 async fn make_event_handler(
     shards: Arc<RwLock<HashMap<u64, Py<Shard>>>>,
     consume_raw_event: PyObject,
-) -> PyResult<impl FnMut((u64, Event)) -> _FinishedFuture> {
+) -> PyResult<impl FnMut((u64, Event)) -> std::future::Ready<()>> {
     let call_soon_threadsafe = Python::with_gil(|py| {
         pyo3_asyncio::get_running_loop(py)?
             .getattr("call_soon_threadsafe")
@@ -560,7 +544,7 @@ async fn make_event_handler(
             Ok(data) => data,
             Err(err) => {
                 warn!(err = as_error!(err); "Failed to deserialize JSON");
-                return _FinishedFuture::new();
+                return ready(());
             }
         };
 
@@ -568,7 +552,7 @@ async fn make_event_handler(
             (Some(data), Some(Some(name))) => (data, name),
             _ => {
                 debug!("Failed to parse event data; this is likely a control event like heartbeat ACK");
-                return _FinishedFuture::new();
+                return ready(());
             }
         };
         Python::with_gil(|py| {
@@ -586,6 +570,6 @@ async fn make_event_handler(
             }
         });
 
-        _FinishedFuture::new()
+        ready(())
     })
 }
