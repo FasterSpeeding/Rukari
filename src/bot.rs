@@ -38,7 +38,7 @@ use log::{as_error, debug, warn};
 use pyo3::exceptions::PyValueError;
 use pyo3::types::IntoPyDict;
 use pyo3::{pyclass, pymethods, Py, PyAny, PyErr, PyObject, PyResult, Python, ToPyObject};
-use pyo3_asyncio::tokio::{future_into_py, local_future_into_py};
+use pyo3_anyio::tokio::{fut_into_coro, local_fut_into_coro};
 use serde_json::Value;
 use tokio::sync::RwLock;
 use twilight_gateway::cluster::{Cluster, ShardScheme};
@@ -377,7 +377,7 @@ impl Bot {
 
         let cluster = self.cluster.clone();
         let notify = self.notify.clone();
-        future_into_py(py, async move {
+        fut_into_coro(py, async move {
             let mut cluster = cluster.write().await;
             cluster
                 .as_ref()
@@ -392,7 +392,7 @@ impl Bot {
 
     fn join<'p>(&self, py: Python<'p>) -> PyResult<&'p PyAny> {
         let notify = self.notify.clone();
-        future_into_py(py, async move {
+        fut_into_coro(py, async move {
             notify.notified().await;
             Ok(())
         })
@@ -441,7 +441,7 @@ impl Bot {
             })
             .collect::<PyResult<HashMap<u64, Py<Shard>>>>()?;
 
-        future_into_py(py, async move {
+        fut_into_coro(py, async move {
             *shards.write().await = shards_;
 
             // TODO: handle error
@@ -485,7 +485,7 @@ impl Bot {
     ) -> PyResult<&'p PyAny> {
         let shards = self.shards.as_ref();
 
-        local_future_into_py(py, async move {
+        local_fut_into_coro(py, async move {
             // let coros = shards
             //     .try_read()
             //     .map_err(|err| PyErr::new::<ComponentStateConflictError, _>(("Bot isn't
@@ -549,11 +549,7 @@ async fn make_event_handler(
     shards: Arc<RwLock<HashMap<u64, Py<Shard>>>>,
     consume_raw_event: PyObject,
 ) -> PyResult<impl FnMut((u64, Event)) -> std::future::Ready<()>> {
-    let call_soon_threadsafe = Python::with_gil(|py| {
-        pyo3_asyncio::get_running_loop(py)?
-            .getattr("call_soon_threadsafe")
-            .map(|value| value.to_object(py))
-    })?;
+    let loop_ = Python::with_gil(|py| pyo3_anyio::get_running_loop(py))?;
     let shards_read = shards.read().await.clone();
 
     Ok(move |item| {
@@ -586,9 +582,10 @@ async fn make_event_handler(
                     return;
                 }
             };
+            let name = name.to_object(py);
 
             // TODO: error handling
-            if let Err(err) = call_soon_threadsafe.call1(py, (&consume_raw_event, name, shard.as_ref(py), data)) {
+            if let Err(err) = loop_.call_soon1(None, consume_raw_event.as_ref(py), &[name, shard.to_object(py), data]) {
                 warn!(err = as_error!(err); "Failed to call call_soon_threadsafe");
             }
         });

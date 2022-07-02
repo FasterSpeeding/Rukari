@@ -34,7 +34,7 @@ use std::time::Duration;
 use pyo3::exceptions::PyNotImplementedError;
 use pyo3::types::{PyInt, PyType};
 use pyo3::{PyAny, PyObject, PyResult, Python, ToPyObject};
-use pyo3_asyncio::tokio::future_into_py;
+use pyo3_anyio::tokio::fut_into_coro;
 use tokio::sync::RwLock;
 use twilight_gateway::cluster::Cluster;
 use twilight_model::gateway::payload::outgoing::request_guild_members::{
@@ -115,7 +115,7 @@ impl Shard {
     }
 
     fn get_get_user_id<'p>(&self, py: Python<'p>) -> PyResult<&'p PyAny> {
-        future_into_py::<_, ()>(
+        fut_into_coro::<()>(
             py,
             async move { Err(PyNotImplementedError::new_err("Not implemented")) },
         )
@@ -213,7 +213,7 @@ impl Shard {
             },
         };
 
-        future_into_py(py, async move {
+        fut_into_coro(py, async move {
             cluster
                 .read()
                 .await
