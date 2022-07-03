@@ -57,6 +57,7 @@ class Bot(
     __slots__: _collections.Iterable[str]
 
     def __init__(
+        self,
         token: str,
         /,
         *,
