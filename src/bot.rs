@@ -470,9 +470,7 @@ impl Bot {
             py,
             async move {
                 fut.await?;
-                println!("A");
                 notify.notified().await;
-                println!("b");
                 Ok(())
             },
             backend,
