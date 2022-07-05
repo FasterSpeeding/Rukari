@@ -28,6 +28,8 @@
 // CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
+#![allow(clippy::too_many_arguments)] // This isn'tcompatible with the Python functions we're implementing.
+#![allow(clippy::borrow_deref_ref)] // Leads to a ton of false positives around args of py types.
 #![feature(never_type)]
 use pyo3::types::PyType;
 use pyo3::PyResult;

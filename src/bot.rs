@@ -29,11 +29,11 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 use std::collections::HashMap;
-use std::future::ready;
+use std::future::{ready, Future, Ready};
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures_util::{Future, StreamExt};
+use futures_util::StreamExt;
 use log::{as_error, debug, warn};
 use pyo3::exceptions::PyValueError;
 use pyo3::types::IntoPyDict;
@@ -559,7 +559,7 @@ impl Bot {
 async fn make_event_handler(
     shards: Arc<RwLock<HashMap<u64, Py<Shard>>>>,
     consume_raw_event: PyObject,
-) -> PyResult<impl FnMut((u64, Event)) -> std::future::Ready<()>> {
+) -> PyResult<impl FnMut((u64, Event)) -> Ready<()>> {
     let py_loop = Python::with_gil(|py| pyo3_anyio::tokio::Tokio::get_locals(py)).unwrap();
     let shards_read = shards.read().await.clone();
 
