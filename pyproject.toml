@@ -5,4 +5,4 @@ build-backend = "maturin"
 [project]
 name = "rukari"
 requires-python = ">=3.9.0,<3.12"
-dependencies = ["hikari~=2.0.0.dev109"]
+dependencies = ["anyio~=3.6", "hikari~=2.0.0.dev109"]

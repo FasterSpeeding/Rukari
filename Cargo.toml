@@ -36,10 +36,10 @@ version = "0.4"
 features = ["extension-module"]
 version = "0.16.5"
 
-
-[dependencies.pyo3-asyncio]
-features = ["tokio-runtime"]
-version = "0.16.0"
+[dependencies.pyo3-anyio]
+# version = "0.1.0"
+git = "https://github.com/FasterSpeeding/pyo3-anyio.git"
+branch = "a"
 
 [dependencies.tokio]
 features = ["rt", "sync"]  # , "rt-multi-thread"

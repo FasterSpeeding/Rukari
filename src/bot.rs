@@ -29,7 +29,7 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 use std::collections::HashMap;
-use std::future::ready;
+use std::future::{ready, Future, Ready};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -38,7 +38,8 @@ use log::{as_error, debug, warn};
 use pyo3::exceptions::PyValueError;
 use pyo3::types::IntoPyDict;
 use pyo3::{pyclass, pymethods, Py, PyAny, PyErr, PyObject, PyResult, Python, ToPyObject};
-use pyo3_asyncio::tokio::{future_into_py, local_future_into_py};
+use pyo3_anyio::tokio::{fut_into_coro, local_fut_into_coro};
+use pyo3_anyio::traits::RustRuntime;
 use serde_json::Value;
 use tokio::sync::RwLock;
 use twilight_gateway::cluster::{Cluster, ShardScheme};
@@ -128,6 +129,62 @@ impl Bot {
             .get(&shard_id)
             .map(|value| value.clone_ref(py))
             .ok_or_else(|| PyValueError::new_err(("Shard not found",)))
+    }
+
+    fn run_async(&mut self, py: Python) -> PyResult<impl Future<Output = PyResult<()>>> {
+        if self.get_is_alive() {
+            return Err(PyErr::new::<ComponentStateConflictError, _>(
+                ("Bot is already running",),
+            ));
+        }
+
+        let cluster_arc = self.cluster.clone();
+        let consume_raw_event = self.get_event_manager(py).getattr(py, "consume_raw_event")?;
+        let gateway_url = self.gateway_url.clone();
+        let intents = self.intents;
+        let notify = self.notify.clone();
+        // TODO: error handling
+        let shard_config = self
+            .shard_config
+            .get_or_insert_with(|| crate::fetch_shards_info(&self.token).unwrap())
+            .clone();
+        let shards = self.shards.clone();
+        let token = self.token.clone();
+        let shards_ = shard_config
+            .iter()
+            .map(|id| {
+                let shard = Py::new(py, Shard::new(cluster_arc.clone(), shard_config.total(), id, intents))?;
+                Ok((id, shard))
+            })
+            .collect::<PyResult<HashMap<u64, Py<Shard>>>>()?;
+
+        Ok(async move {
+            *shards.write().await = shards_;
+
+            // TODO: handle error
+            let (cluster, events) = Cluster::builder(token, intents)
+                .event_types(twilight_gateway::EventTypeFlags::SHARD_PAYLOAD)
+                .identify_properties(IdentifyProperties::new("rukari", "rukari", std::env::consts::OS))
+                .shard_scheme(shard_config)
+                .gateway_url(gateway_url)
+                .build()
+                .await
+                .unwrap();
+
+            let cluster = Arc::new(cluster);
+            *cluster_arc.write().await = Some(cluster.clone());
+
+            let handle_event = make_event_handler(shards.clone(), consume_raw_event).await?;
+            tokio::spawn(async move {
+                events.for_each_concurrent(None, handle_event).await;
+                notify.notify_waiters();
+                *cluster_arc.write().await = None;
+                shards.write().await.clear();
+            });
+
+            cluster.up().await;
+            Ok(())
+        })
     }
 }
 
@@ -280,6 +337,7 @@ impl Bot {
         rest_url: Option<&str>,
         gateway_url: &str,
     ) -> PyResult<Self> {
+        pyo3::prepare_freethreaded_python(); // TODO: is this neccessary or is this poorly working around a bug?
         let intents = crate::to_intents(intents)?;
 
         let hikari_impl = py.import("hikari.impl")?;
@@ -377,7 +435,7 @@ impl Bot {
 
         let cluster = self.cluster.clone();
         let notify = self.notify.clone();
-        future_into_py(py, async move {
+        fut_into_coro(py, async move {
             let mut cluster = cluster.write().await;
             cluster
                 .as_ref()
@@ -392,82 +450,35 @@ impl Bot {
 
     fn join<'p>(&self, py: Python<'p>) -> PyResult<&'p PyAny> {
         let notify = self.notify.clone();
-        future_into_py(py, async move {
+        fut_into_coro(py, async move {
             notify.notified().await;
             Ok(())
         })
     }
 
-    fn run(&mut self, py: Python) -> PyResult<()> {
+    #[args("*", backend = "\"asyncio\"")]
+    fn run(&mut self, py: Python, backend: &str) -> PyResult<PyResult<()>> {
         if self.get_is_alive() {
             return Err(PyErr::new::<ComponentStateConflictError, _>(
                 ("Bot is already running",),
             ));
         }
 
-        let run_until_complete = py
-            .import("asyncio")?
-            .call_method0("new_event_loop")?
-            .getattr("run_until_complete")?;
-        run_until_complete.call1((self.start(py)?,))?;
-        run_until_complete.call1((self.join(py)?,))?;
-        Ok(())
+        let fut = self.run_async(py)?;
+        let notify = self.notify.clone();
+        Ok(pyo3_anyio::tokio::run(
+            py,
+            async move {
+                fut.await?;
+                notify.notified().await;
+                Ok(())
+            },
+            backend,
+        ))
     }
 
     fn start<'p>(&mut self, py: Python<'p>) -> PyResult<&'p PyAny> {
-        if self.get_is_alive() {
-            return Err(PyErr::new::<ComponentStateConflictError, _>(
-                ("Bot is already running",),
-            ));
-        }
-
-        let cluster_arc = self.cluster.clone();
-        let consume_raw_event = self.get_event_manager(py).getattr(py, "consume_raw_event")?;
-        let gateway_url = self.gateway_url.clone();
-        let intents = self.intents;
-        let notify = self.notify.clone();
-        // TODO: error handling
-        let shard_config = self
-            .shard_config
-            .get_or_insert_with(|| crate::fetch_shards_info(&self.token).unwrap())
-            .clone();
-        let shards = self.shards.clone();
-        let token = self.token.clone();
-        let shards_ = shard_config
-            .iter()
-            .map(|id| {
-                let shard = Py::new(py, Shard::new(cluster_arc.clone(), shard_config.total(), id, intents))?;
-                Ok((id, shard))
-            })
-            .collect::<PyResult<HashMap<u64, Py<Shard>>>>()?;
-
-        future_into_py(py, async move {
-            *shards.write().await = shards_;
-
-            // TODO: handle error
-            let (cluster, events) = Cluster::builder(token, intents)
-                .event_types(twilight_gateway::EventTypeFlags::SHARD_PAYLOAD)
-                .identify_properties(IdentifyProperties::new("rukari", "rukari", std::env::consts::OS))
-                .shard_scheme(shard_config)
-                .gateway_url(gateway_url)
-                .build()
-                .await
-                .unwrap();
-
-            let cluster = Arc::new(cluster);
-            *cluster_arc.write().await = Some(cluster.clone());
-
-            let handle_event = make_event_handler(shards.clone(), consume_raw_event).await?;
-            tokio::spawn(async move {
-                events.for_each_concurrent(None, handle_event).await;
-                notify.notify_waiters();
-                *cluster_arc.write().await = None;
-                shards.write().await.clear();
-            });
-
-            cluster.up().await;
-            Ok(())
-        })
+        pyo3_anyio::tokio::fut_into_coro(py, self.run_async(py)?)
     }
 
     fn get_me(&self, py: Python) -> PyObject {
@@ -485,7 +496,7 @@ impl Bot {
     ) -> PyResult<&'p PyAny> {
         let shards = self.shards.as_ref();
 
-        local_future_into_py(py, async move {
+        local_fut_into_coro(py, async move {
             // let coros = shards
             //     .try_read()
             //     .map_err(|err| PyErr::new::<ComponentStateConflictError, _>(("Bot isn't
@@ -548,12 +559,8 @@ impl Bot {
 async fn make_event_handler(
     shards: Arc<RwLock<HashMap<u64, Py<Shard>>>>,
     consume_raw_event: PyObject,
-) -> PyResult<impl FnMut((u64, Event)) -> std::future::Ready<()>> {
-    let call_soon_threadsafe = Python::with_gil(|py| {
-        pyo3_asyncio::get_running_loop(py)?
-            .getattr("call_soon_threadsafe")
-            .map(|value| value.to_object(py))
-    })?;
+) -> PyResult<impl FnMut((u64, Event)) -> Ready<()>> {
+    let py_loop = Python::with_gil(|py| pyo3_anyio::tokio::Tokio::get_locals(py)).unwrap();
     let shards_read = shards.read().await.clone();
 
     Ok(move |item| {
@@ -586,9 +593,10 @@ async fn make_event_handler(
                     return;
                 }
             };
+            let name = name.to_object(py);
 
             // TODO: error handling
-            if let Err(err) = call_soon_threadsafe.call1(py, (&consume_raw_event, name, shard.as_ref(py), data)) {
+            if let Err(err) = py_loop.call_soon1(consume_raw_event.as_ref(py), &[name, shard.to_object(py), data]) {
                 warn!(err = as_error!(err); "Failed to call call_soon_threadsafe");
             }
         });
