@@ -643,7 +643,7 @@ dependencies = [
 [[package]]
 name = "pyo3-anyio"
 version = "0.1.0"
-source = "git+https://github.com/FasterSpeeding/pyo3-anyio.git?branch=a#07bcd7572437f5a61ef1f40d04fef77604382401"
+source = "git+https://github.com/FasterSpeeding/pyo3-anyio.git?branch=a#2a84ab18d76e9722e9d2b6a301d3c8f7a954f998"
 dependencies = [
  "async-oneshot",
  "once_cell",

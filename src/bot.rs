@@ -33,12 +33,13 @@ use std::future::{ready, Future, Ready};
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures_util::stream::Once;
 use futures_util::StreamExt;
 use log::{as_error, debug, warn};
 use pyo3::exceptions::PyValueError;
-use pyo3::types::IntoPyDict;
-use pyo3::{pyclass, pymethods, Py, PyAny, PyErr, PyObject, PyResult, Python, ToPyObject};
-use pyo3_anyio::tokio::{fut_into_coro, local_fut_into_coro};
+use pyo3::types::{IntoPyDict, PyDict};
+use pyo3::{pyclass, pymethods, IntoPy, Py, PyAny, PyErr, PyObject, PyResult, Python, ToPyObject};
+use pyo3_anyio::tokio::{coro_to_fut, fut_into_coro, local_fut_into_coro};
 use pyo3_anyio::traits::RustRuntime;
 use serde_json::Value;
 use tokio::sync::RwLock;
@@ -139,7 +140,20 @@ impl Bot {
         }
 
         let cluster_arc = self.cluster.clone();
-        let consume_raw_event = self.get_event_manager(py).getattr(py, "consume_raw_event")?;
+        let event_manager = self.get_event_manager(py);
+        let consume_raw_event = event_manager.getattr(py, "consume_raw_event")?;
+
+        /// the dispatch method only returns a gathering Future (not a
+        /// coroutine) and needs to be called in the current thread.
+        let globals_ = [("callback", event_manager.getattr(py, "dispatch")?)].into_py_dict(py);
+        py.run(
+            "async def dispatch(event):\n  await callback(event)",
+            Some(globals_),
+            None,
+        )
+        .unwrap();
+        let dispatch = globals_.get_item("dispatch").unwrap().to_object(py);
+
         let gateway_url = self.gateway_url.clone();
         let intents = self.intents;
         let notify = self.notify.clone();
@@ -158,8 +172,16 @@ impl Bot {
             })
             .collect::<PyResult<HashMap<u64, Py<Shard>>>>()?;
 
+        let event_factory = self.get_event_factory(py);
+        let starting_event = event_factory.call_method0(py, "deserialize_starting_event")?;
+        let started_event = event_factory.call_method0(py, "deserialize_started_event")?;
+        let stopping_event = event_factory.call_method0(py, "deserialize_stopping_event")?;
+        let stopped_event = event_factory.call_method0(py, "deserialize_stopping_event")?;
+
         Ok(async move {
             *shards.write().await = shards_;
+            let task_locals = pyo3_anyio::tokio::Tokio::get_locals().unwrap();
+            dispatch_lifetime(&dispatch, starting_event).await?;
 
             // TODO: handle error
             let (cluster, events) = Cluster::builder(token, intents)
@@ -174,18 +196,27 @@ impl Bot {
             let cluster = Arc::new(cluster);
             *cluster_arc.write().await = Some(cluster.clone());
 
-            let handle_event = make_event_handler(shards.clone(), consume_raw_event).await?;
-            tokio::spawn(async move {
+            let handle_event = make_event_handler(task_locals.clone(), shards.clone(), consume_raw_event).await?;
+            tokio::spawn(pyo3_anyio::tokio::Tokio::scope(task_locals, async move {
+                let _ = dispatch_lifetime(&dispatch, started_event).await.ok();
+
                 events.for_each_concurrent(None, handle_event).await;
                 notify.notify_waiters();
                 *cluster_arc.write().await = None;
                 shards.write().await.clear();
-            });
+
+                let _ = dispatch_lifetime(&dispatch, stopping_event).await.ok();
+                let _ = dispatch_lifetime(&dispatch, stopped_event).await.ok();
+            }));
 
             cluster.up().await;
             Ok(())
         })
     }
+}
+
+async fn dispatch_lifetime(dispatch: &PyObject, event: PyObject) -> PyResult<PyObject> {
+    Python::with_gil(|py| pyo3_anyio::tokio::await_py1(dispatch.as_ref(py), &[event]))?.await
 }
 
 
@@ -478,7 +509,7 @@ impl Bot {
     }
 
     fn start<'p>(&mut self, py: Python<'p>) -> PyResult<&'p PyAny> {
-        pyo3_anyio::tokio::fut_into_coro(py, self.run_async(py)?)
+        fut_into_coro(py, self.run_async(py)?)
     }
 
     fn get_me(&self, py: Python) -> PyObject {
@@ -557,10 +588,10 @@ impl Bot {
 }
 
 async fn make_event_handler(
+    task_locals: pyo3_anyio::any::TaskLocals,
     shards: Arc<RwLock<HashMap<u64, Py<Shard>>>>,
     consume_raw_event: PyObject,
 ) -> PyResult<impl FnMut((u64, Event)) -> Ready<()>> {
-    let py_loop = Python::with_gil(|py| pyo3_anyio::tokio::Tokio::get_locals(py)).unwrap();
     let shards_read = shards.read().await.clone();
 
     Ok(move |item| {
@@ -596,7 +627,7 @@ async fn make_event_handler(
             let name = name.to_object(py);
 
             // TODO: error handling
-            if let Err(err) = py_loop.call_soon1(consume_raw_event.as_ref(py), &[name, shard.to_object(py), data]) {
+            if let Err(err) = task_locals.call_soon1(consume_raw_event.as_ref(py), &[name, shard.to_object(py), data]) {
                 warn!(err = as_error!(err); "Failed to call call_soon_threadsafe");
             }
         });

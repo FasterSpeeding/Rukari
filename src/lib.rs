@@ -30,7 +30,6 @@
 // POSSIBILITY OF SUCH DAMAGE.
 #![allow(clippy::too_many_arguments)] // This isn't compatible with the Python functions we're implementing.
 #![allow(clippy::borrow_deref_ref)] // Leads to a ton of false positives around args of py types.
-#![feature(never_type)]
 use pyo3::types::PyType;
 use pyo3::PyResult;
 use twilight_gateway::cluster::ShardScheme;
