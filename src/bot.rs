@@ -57,6 +57,8 @@ struct _BotRefs {
     event_factory: Option<PyObject>,
     event_manager: Option<PyObject>,
     rest: Option<PyObject>,
+    shards: Arc<RwLock<HashMap<u64, Py<Shard>>>>,
+    voice: Option<PyObject>,
 }
 
 #[pymethods]
@@ -84,6 +86,16 @@ impl _BotRefs {
     #[getter]
     fn get_rest(&self, py: Python) -> PyObject {
         self.rest.as_ref().unwrap().clone_ref(py)
+    }
+
+    #[getter]
+    fn get_shards(&self, py: Python) -> HashMap<u64, Py<Shard>> {
+        self.shards.try_read().map(|map| map.clone()).unwrap_or_default()
+    }
+
+    #[getter]
+    fn get_voice(&self, py: Python) -> PyObject {
+        self.voice.as_ref().unwrap().clone_ref(py)
     }
 }
 
@@ -205,8 +217,8 @@ impl Bot {
     }
 
     #[getter]
-    fn get_intents(&self, py: Python) -> PyObject {
-        self.intents_py.clone_ref(py)
+    fn get_intents<'p>(&'p self, py: Python<'p>) -> &'p PyAny {
+        self.intents_py.as_ref(py)
     }
 
     #[getter]
@@ -234,7 +246,12 @@ impl Bot {
 
     #[getter]
     fn get_shards(&self, py: Python) -> HashMap<u64, Py<Shard>> {
-        self.shards.try_read().map(|map| map.clone()).unwrap_or_default()
+        self.refs.borrow(py).get_shards(py)
+    }
+
+    #[getter]
+    fn get_voice(&self, py: Python) -> PyObject {
+        return self.refs.borrow(py).get_voice(py);
     }
 
     #[new]
@@ -265,38 +282,41 @@ impl Bot {
     ) -> PyResult<Self> {
         let intents = crate::to_intents(intents)?;
 
-        let config = py.import("hikari.impl.config")?;
+        let hikari_impl = py.import("hikari.impl")?;
         let http_settings = http_settings
             .map::<PyResult<PyObject>, _>(Ok)
-            .unwrap_or_else(|| Ok(config.call_method0("HTTPSettings")?.to_object(py)))?;
+            .unwrap_or_else(|| Ok(hikari_impl.call_method0("HTTPSettings")?.to_object(py)))?;
         let proxy_settings = proxy_settings
             .map::<PyResult<PyObject>, _>(Ok)
-            .unwrap_or_else(|| Ok(config.call_method0("ProxySettings")?.to_object(py)))?;
+            .unwrap_or_else(|| Ok(hikari_impl.call_method0("ProxySettings")?.to_object(py)))?;
+
+        let shard_map = Arc::new(RwLock::new(HashMap::new()));
 
         let refs = Py::new(py, _BotRefs {
             entity_factory: None,
             event_factory: None,
             event_manager: None,
             rest: None,
+            shards: shard_map.clone(),
+            voice: None,
         })?;
 
-        let entity_factory = py
-            .import("hikari.impl.entity_factory")?
-            .call_method1("EntityFactoryImpl", (refs.clone_ref(py),))?
+        let entity_factory = hikari_impl
+            .call_method1("EntityFactoryImpl", (refs.as_ref(py),))?
             .to_object(py);
 
+        // TODO: EventFactoryImpl needs to be exported at hikari.impl.__all__
         let event_factory = py
             .import("hikari.impl.event_factory")?
-            .call_method1("EventFactoryImpl", (refs.clone_ref(py),))?
+            .call_method1("EventFactoryImpl", (refs.as_ref(py),))?
             .to_object(py);
 
-        let event_manager = py
-            .import("hikari.impl.event_manager")?
+        let event_manager = hikari_impl
             .call_method1(
                 "EventManagerImpl",
                 (
-                    entity_factory.clone_ref(py),
-                    event_factory.clone_ref(py),
+                    entity_factory.as_ref(py),
+                    event_factory.as_ref(py),
                     intents.bits().to_object(py),
                 ),
             )?
@@ -315,10 +335,13 @@ impl Bot {
             ("rest_url", rest_url.to_object(py)),
         ]
         .into_py_dict(py);
-        let rest = py
-            .import("hikari.impl.rest")?
+        let rest = hikari_impl
             .getattr("RESTClientImpl")?
             .call((), Some(rest_kwargs))?
+            .to_object(py);
+
+        let voice = hikari_impl
+            .call_method1("VoiceComponentImpl", (refs.as_ref(py),))?
             .to_object(py);
 
         let mut refs_mut = refs.borrow_mut(py);
@@ -326,6 +349,7 @@ impl Bot {
         refs_mut.event_factory = Some(event_factory);
         refs_mut.event_manager = Some(event_manager);
         refs_mut.rest = Some(rest);
+        refs_mut.voice = Some(voice);
         drop(refs_mut);
 
         let intents_py = py
@@ -333,14 +357,13 @@ impl Bot {
             .call_method1("Intents", (intents.bits().to_object(py),))?
             .to_object(py);
 
-
         Ok(Self {
             cluster: Arc::new(RwLock::new(None)),
             intents,
             intents_py,
             notify: Arc::new(tokio::sync::Notify::new()),
             refs,
-            shards: Arc::new(RwLock::new(HashMap::new())),
+            shards: shard_map,
             shard_config: shards.map(|(from, to, total)| ShardScheme::Range { from, to, total }),
             token,
             gateway_url: gateway_url.to_owned(),
@@ -565,7 +588,7 @@ async fn make_event_handler(
             };
 
             // TODO: error handling
-            if let Err(err) = call_soon_threadsafe.call1(py, (&consume_raw_event, name, shard.clone_ref(py), data)) {
+            if let Err(err) = call_soon_threadsafe.call1(py, (&consume_raw_event, name, shard.as_ref(py), data)) {
                 warn!(err = as_error!(err); "Failed to call call_soon_threadsafe");
             }
         });

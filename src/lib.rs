@@ -132,10 +132,6 @@ fn rukari(py: pyo3::Python<'_>, module: &pyo3::types::PyModule) -> PyResult<()> 
         "Bot isn't EventManagerAware"
     );
     assert!(
-        bot_type.is_subclass(traits.getattr("IntentsAware")?.cast_as::<PyType>()?)?,
-        "Bot isn't IntentsAware"
-    );
-    assert!(
         bot_type.is_subclass(traits.getattr("RESTAware")?.cast_as::<PyType>()?)?,
         "Bot isn't RESTAware"
     );
@@ -143,12 +139,10 @@ fn rukari(py: pyo3::Python<'_>, module: &pyo3::types::PyModule) -> PyResult<()> 
         bot_type.is_subclass(traits.getattr("Runnable")?.cast_as::<PyType>()?)?,
         "Bot isn't Runnable"
     );
-    // This would require being voice aware which probably isn't going to happen
-    // for now.
-    // assert!(
-    //     bot_type.is_subclass(traits.getattr("ShardAware")?.cast_as::<PyType>()?)?
-    // ,     "Bot isn't ShardAware"
-    // );
+    assert!(
+        bot_type.is_subclass(traits.getattr("ShardAware")?.cast_as::<PyType>()?)?,
+        "Bot isn't ShardAware"
+    );
 
     Ok(())
 }
