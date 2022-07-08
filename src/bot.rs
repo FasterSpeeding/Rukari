@@ -33,14 +33,12 @@ use std::future::{ready, Future, Ready};
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures_util::stream::Once;
 use futures_util::StreamExt;
 use log::{as_error, debug, warn};
 use pyo3::exceptions::PyValueError;
-use pyo3::types::{IntoPyDict, PyDict};
-use pyo3::{pyclass, pymethods, IntoPy, Py, PyAny, PyErr, PyObject, PyResult, Python, ToPyObject};
-use pyo3_anyio::tokio::{coro_to_fut, fut_into_coro, local_fut_into_coro};
-use pyo3_anyio::traits::RustRuntime;
+use pyo3::types::IntoPyDict;
+use pyo3::{pyclass, pymethods, Py, PyAny, PyErr, PyObject, PyResult, Python, ToPyObject};
+use pyo3_anyio::tokio::{fut_into_coro, local_fut_into_coro};
 use serde_json::Value;
 use tokio::sync::RwLock;
 use twilight_gateway::cluster::{Cluster, ShardScheme};
@@ -91,7 +89,7 @@ impl _BotRefs {
     }
 
     #[getter]
-    fn get_shards(&self, py: Python) -> HashMap<u64, Py<Shard>> {
+    fn get_shards(&self) -> HashMap<u64, Py<Shard>> {
         self.shards.try_read().map(|map| map.clone()).unwrap_or_default()
     }
 
@@ -143,8 +141,8 @@ impl Bot {
         let event_manager = self.get_event_manager(py);
         let consume_raw_event = event_manager.getattr(py, "consume_raw_event")?;
 
-        /// the dispatch method only returns a gathering Future (not a
-        /// coroutine) and needs to be called in the current thread.
+        // the dispatch method only returns a gathering Future (not a
+        // coroutine) and needs to be called in the current thread.
         let globals_ = [("callback", event_manager.getattr(py, "dispatch")?)].into_py_dict(py);
         py.run(
             "async def dispatch(event):\n  await callback(event)",
@@ -180,7 +178,7 @@ impl Bot {
 
         Ok(async move {
             *shards.write().await = shards_;
-            let task_locals = pyo3_anyio::tokio::Tokio::get_locals().unwrap();
+            let task_locals = Python::with_gil(|py| pyo3_anyio::tokio::get_locals_py(py).unwrap());
             dispatch_lifetime(&dispatch, starting_event).await?;
 
             // TODO: handle error
@@ -197,7 +195,7 @@ impl Bot {
             *cluster_arc.write().await = Some(cluster.clone());
 
             let handle_event = make_event_handler(task_locals.clone(), shards.clone(), consume_raw_event).await?;
-            tokio::spawn(pyo3_anyio::tokio::Tokio::scope(task_locals, async move {
+            tokio::spawn(pyo3_anyio::tokio::scope(task_locals, async move {
                 let _ = dispatch_lifetime(&dispatch, started_event).await.ok();
 
                 events.for_each_concurrent(None, handle_event).await;
@@ -334,7 +332,7 @@ impl Bot {
 
     #[getter]
     fn get_shards(&self, py: Python) -> HashMap<u64, Py<Shard>> {
-        self.refs.borrow(py).get_shards(py)
+        self.refs.borrow(py).get_shards()
     }
 
     #[getter]

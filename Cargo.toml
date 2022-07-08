@@ -37,9 +37,7 @@ features = ["extension-module"]
 version = "0.16.5"
 
 [dependencies.pyo3-anyio]
-# version = "0.1.0"
-git = "https://github.com/FasterSpeeding/pyo3-anyio.git"
-branch = "a"
+version = "0.2.0"
 
 [dependencies.tokio]
 features = ["rt", "sync"]  # , "rt-multi-thread"
