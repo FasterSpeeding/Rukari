@@ -28,6 +28,7 @@
 // CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::future::{ready, Future, Ready};
 use std::sync::Arc;
@@ -37,8 +38,8 @@ use futures_util::StreamExt;
 use log::{as_error, debug, warn};
 use pyo3::exceptions::PyValueError;
 use pyo3::types::IntoPyDict;
-use pyo3::{pyclass, pymethods, Py, PyAny, PyErr, PyObject, PyResult, Python, ToPyObject};
-use pyo3_anyio::tokio::{fut_into_coro, local_fut_into_coro};
+use pyo3::{pyclass, pymethods, IntoPy, Py, PyAny, PyErr, PyObject, PyResult, Python, ToPyObject};
+use pyo3_anyio::tokio::{await_py0, fut_into_coro, local_fut_into_coro};
 use serde_json::Value;
 use tokio::sync::RwLock;
 use twilight_gateway::cluster::{Cluster, ShardScheme};
@@ -66,6 +67,16 @@ impl _BotRefs {
     #[getter]
     fn get_entity_factory(&self, py: Python) -> PyObject {
         self.entity_factory.as_ref().unwrap().clone_ref(py)
+    }
+
+    #[getter]
+    fn get_event_factory(&self, py: Python) -> PyObject {
+        self.event_factory.as_ref().unwrap().clone_ref(py)
+    }
+
+    #[getter]
+    fn get_event_manager(&self, py: Python) -> PyObject {
+        self.event_manager.as_ref().unwrap().clone_ref(py)
     }
 
     #[getter]
@@ -107,7 +118,7 @@ pub struct Bot {
     intents_py: PyObject,
     notify: Arc<tokio::sync::Notify>,
     refs: Py<_BotRefs>,
-    shard_config: Option<ShardScheme>,
+    shard_config: RefCell<Option<ShardScheme>>,
     shards: Arc<RwLock<HashMap<u64, Py<Shard>>>>,
     token: String,
 }
@@ -119,8 +130,7 @@ impl Bot {
         }
 
         let guild = guild.extract::<u64>(py)?;
-        let shard_config = self.shard_config.as_ref().unwrap();
-        let shard_id = (guild >> 22) % shard_config.total();
+        let shard_id = (guild >> 22) % self.shard_config.borrow().as_ref().unwrap().total();
 
         self.shards
             .try_read()
@@ -130,7 +140,7 @@ impl Bot {
             .ok_or_else(|| PyValueError::new_err(("Shard not found",)))
     }
 
-    fn run_async(&mut self, py: Python) -> PyResult<impl Future<Output = PyResult<()>>> {
+    fn run_async(&self, py: Python) -> PyResult<impl Future<Output = PyResult<()>>> {
         if self.get_is_alive() {
             return Err(PyErr::new::<ComponentStateConflictError, _>(
                 ("Bot is already running",),
@@ -158,10 +168,10 @@ impl Bot {
         // TODO: error handling
         let shard_config = self
             .shard_config
+            .borrow_mut()
             .get_or_insert_with(|| crate::fetch_shards_info(&self.token).unwrap())
             .clone();
         let shards = self.shards.clone();
-        let token = self.token.clone();
         let shards_ = shard_config
             .iter()
             .map(|id| {
@@ -169,8 +179,11 @@ impl Bot {
                 Ok((id, shard))
             })
             .collect::<PyResult<HashMap<u64, Py<Shard>>>>()?;
+        let token = self.token.clone();
 
         let event_factory = self.get_event_factory(py);
+        let start_rest = self.get_rest(py).getattr(py, "start")?;
+        let start_voice = self.get_voice(py).getattr(py, "start")?;
         let starting_event = event_factory.call_method0(py, "deserialize_starting_event")?;
         let started_event = event_factory.call_method0(py, "deserialize_started_event")?;
         let stopping_event = event_factory.call_method0(py, "deserialize_stopping_event")?;
@@ -179,6 +192,8 @@ impl Bot {
         Ok(async move {
             *shards.write().await = shards_;
             let task_locals = Python::with_gil(|py| pyo3_anyio::tokio::get_locals_py(py).unwrap());
+            Python::with_gil(|py| call_in_loop(task_locals.clone_py(py), start_rest))?.await?;
+            Python::with_gil(|py| call_in_loop(task_locals.clone_py(py), start_voice))?.await?;
             dispatch_lifetime(&dispatch, starting_event).await?;
 
             // TODO: handle error
@@ -213,6 +228,42 @@ impl Bot {
     }
 }
 
+#[pyclass]
+struct CallInLoop {
+    callback: PyObject,
+    send: Option<tokio::sync::oneshot::Sender<PyResult<()>>>,
+}
+
+#[pymethods]
+impl CallInLoop {
+    fn __call__(&mut self, py: Python) {
+        match self.callback.call0(py) {
+            Ok(_) => self.send.take().unwrap().send(Ok(())),
+            Err(err) => self.send.take().unwrap().send(Err(err)),
+        }
+        .unwrap();
+    }
+}
+
+fn call_in_loop(
+    locals: pyo3_anyio::any::TaskLocals,
+    callback: PyObject,
+) -> PyResult<impl Future<Output = PyResult<()>>> {
+    let (send, recv) = tokio::sync::oneshot::channel::<PyResult<()>>();
+
+    Python::with_gil(|py| {
+        locals.call_soon0(
+            CallInLoop {
+                callback,
+                send: Some(send),
+            }
+            .into_py(py)
+            .as_ref(py),
+        )
+    })?;
+    Ok(async move { recv.await.unwrap() })
+}
+
 async fn dispatch_lifetime(dispatch: &PyObject, event: PyObject) -> PyResult<PyObject> {
     Python::with_gil(|py| pyo3_anyio::tokio::await_py1(dispatch.as_ref(py), &[event]))?.await
 }
@@ -227,12 +278,12 @@ impl Bot {
 
     #[getter]
     fn get_event_factory(&self, py: Python) -> PyObject {
-        self.refs.borrow(py).event_factory.as_ref().unwrap().clone_ref(py)
+        self.refs.borrow(py).get_event_factory(py)
     }
 
     #[getter]
     fn get_event_manager(&self, py: Python) -> PyObject {
-        self.refs.borrow(py).event_manager.as_ref().unwrap().clone_ref(py)
+        self.refs.borrow(py).get_event_manager(py)
     }
 
     #[getter]
@@ -451,13 +502,13 @@ impl Bot {
             notify: Arc::new(tokio::sync::Notify::new()),
             refs,
             shards: shard_map,
-            shard_config: shards.map(|(from, to, total)| ShardScheme::Range { from, to, total }),
+            shard_config: RefCell::new(shards.map(|(from, to, total)| ShardScheme::Range { from, to, total })),
             token,
             gateway_url: gateway_url.to_owned(),
         })
     }
 
-    fn close<'p>(&mut self, py: Python<'p>) -> PyResult<&'p PyAny> {
+    fn close<'p>(&self, py: Python<'p>) -> PyResult<&'p PyAny> {
         if !self.get_is_alive() {
             return Err(PyErr::new::<ComponentStateConflictError, _>(("Bot isn't running",)));
         }
@@ -486,7 +537,7 @@ impl Bot {
     }
 
     #[args("*", backend = "\"asyncio\"")]
-    fn run(&mut self, py: Python, backend: &str) -> PyResult<PyResult<()>> {
+    fn run(&self, py: Python, backend: &str) -> PyResult<PyResult<()>> {
         if self.get_is_alive() {
             return Err(PyErr::new::<ComponentStateConflictError, _>(
                 ("Bot is already running",),
@@ -506,7 +557,7 @@ impl Bot {
         ))
     }
 
-    fn start<'p>(&mut self, py: Python<'p>) -> PyResult<&'p PyAny> {
+    fn start<'p>(&self, py: Python<'p>) -> PyResult<&'p PyAny> {
         fut_into_coro(py, self.run_async(py)?)
     }
 
