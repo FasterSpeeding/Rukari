@@ -38,6 +38,7 @@ use twilight_model::gateway::Intents;
 enum BotMessage {}
 
 mod bot;
+mod event_manager;
 mod shard;
 
 #[pyo3::pyclass]
