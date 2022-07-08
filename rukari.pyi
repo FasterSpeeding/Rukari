@@ -49,10 +49,9 @@ __version__: typing.Final[str]
 class Bot(
     hikari.EventFactoryAware,
     hikari.EventManagerAware,
-    hikari.IntentsAware,
-    hikari.RESTAware,
     hikari.Runnable,
-    hikari.EventFactoryAware,
+    hikari.RESTAware,
+    hikari.ShardAware,
 ):
     __slots__: _collections.Iterable[str]
 
@@ -67,41 +66,5 @@ class Bot(
         max_rate_limit: float = 300.0,
         max_retries: int = 3,
         shards: tuple[int, int, int] | None = None,
-    ) -> None: ...
-    @property
-    def heartbeat_latencies(self) -> _collections.Mapping[int, float]: ...
-    @property
-    def heartbeat_latency(self) -> float: ...
-    @property
-    def shards(self) -> typing.Mapping[int, hikari.api.GatewayShard]: ...
-    @property
-    def shard_count(self) -> int: ...
-    def get_me(self) -> typing.Optional[hikari.OwnUser]: ...
-    async def update_presence(
-        self,
-        *,
-        status: hikari.Status | hikari.UndefinedType = hikari.UNDEFINED,
-        idle_since: datetime.datetime | hikari.UndefinedType | None = hikari.UNDEFINED,
-        activity: hikari.Activity | hikari.UndefinedType | None = hikari.UNDEFINED,
-        afk: bool | hikari.UndefinedType = hikari.UNDEFINED,
-    ) -> None: ...
-    async def update_voice_state(
-        self,
-        guild: hikari.Snowflakeish | hikari.PartialGuild,
-        channel: hikari.Snowflakeish | hikari.GuildVoiceChannel | None,
-        *,
-        self_mute: bool | hikari.UndefinedType = hikari.UNDEFINED,
-        self_deaf: bool | hikari.UndefinedType = hikari.UNDEFINED,
-    ) -> None: ...
-    async def request_guild_members(
-        self,
-        guild: hikari.Snowflakeish | hikari.PartialGuild,
-        *,
-        include_presences: bool | hikari.UndefinedType = hikari.UNDEFINED,
-        query: str = "",
-        limit: int = 0,
-        users: hikari.SnowflakeishSequence[hikari.User]
-        | hikari.UndefinedType = hikari.UNDEFINED,
-        nonce: str | hikari.UndefinedType = hikari.UNDEFINED,
     ) -> None: ...
     def run(self, *, backend: str = "asyncio") -> None: ...
