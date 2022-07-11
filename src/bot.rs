@@ -36,10 +36,10 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use log::{as_error, debug, warn};
-use pyo3::exceptions::PyValueError;
-use pyo3::types::IntoPyDict;
+use pyo3::exceptions::{PyKeyError, PyValueError};
+use pyo3::types::{IntoPyDict, PyTuple};
 use pyo3::{pyclass, pymethods, IntoPy, Py, PyAny, PyErr, PyObject, PyResult, Python, ToPyObject};
-use pyo3_anyio::tokio::{await_py0, fut_into_coro, local_fut_into_coro};
+use pyo3_anyio::tokio::{await_py1, fut_into_coro, local_fut_into_coro};
 use serde_json::Value;
 use tokio::sync::RwLock;
 use twilight_gateway::cluster::{Cluster, ShardScheme};
@@ -265,7 +265,7 @@ fn call_in_loop(
 }
 
 async fn dispatch_lifetime(dispatch: &PyObject, event: PyObject) -> PyResult<PyObject> {
-    Python::with_gil(|py| pyo3_anyio::tokio::await_py1(dispatch.as_ref(py), &[event]))?.await
+    Python::with_gil(|py| await_py1(dispatch.as_ref(py), &[event]))?.await
 }
 
 
@@ -633,6 +633,38 @@ impl Bot {
             users,
             nonce,
         )
+    }
+}
+
+#[pyclass]
+struct ConsumeRawEvent {
+    callback: PyObject,
+    context: Option<PyObject>,
+}
+
+#[pymethods]
+impl ConsumeRawEvent {
+    #[args(args = "*")]
+    fn __call__(&self, py: Python, args: &PyTuple) -> PyResult<()> {
+        let result = if let Some(ref context) = self.context {
+            context.call_method1(
+                py,
+                "run",
+                PyTuple::new(py, [&[self.callback.as_ref(py)], args.as_slice()].concat()),
+            )
+        } else {
+            self.callback.call1(py, args)
+        };
+
+        // TODO: switch to `if let Err(err) = result && !err.is_instance_of` when
+        // https://github.com/rust-lang/rust/issues/53667 is stabalised.
+        if let Err(err) = result {
+            if !err.is_instance_of::<PyKeyError>(py) {
+                return Err(err);
+            }
+        };
+
+        Ok(())
     }
 }
 
