@@ -4,5 +4,13 @@ build-backend = "maturin"
 
 [project]
 name = "rukari"
+version = "0.1.0"
 requires-python = ">=3.9.0,<3.12"
+license = {file = "LICENSE"}
+authors = [ {name = "Faster Speeding", email="lucina@lmbyrne.dev"} ]
 dependencies = ["anyio~=3.6", "hikari~=2.0.0.dev109"]
+
+[project.urls]
+Homepage = "https://github.com/FasterSpeeding/Rukari"
+Repository = "https://github.com/FasterSpeeding/Rukari"
+Documentation = "https://github.com/FasterSpeeding/Rukari/blob/master/README.md"

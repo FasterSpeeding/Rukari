@@ -112,16 +112,6 @@ fn rukari(py: pyo3::Python<'_>, module: &pyo3::types::PyModule) -> PyResult<()> 
         .getattr("GatewayShard")?
         .call_method1("register", (PyType::new::<crate::shard::Shard>(py),))?;
 
-    module.add("__author__", "Faster Speeding")?;
-    module.add("__ci__", "https://github.com/FasterSpeeding/Rukari/actions")?;
-    module.add("__copyright__", "© 2022 Faster Speeding")?;
-    module.add("__coverage__", "https://codeclimate.com/github/FasterSpeeding/Rukari")?;
-    module.add("__docs__", "https://rukari.cursed.solutions/")?;
-    module.add("__email__", "lucina@lmbyrne.dev")?;
-    module.add("__issue_tracker__", "https://github.com/FasterSpeeding/Rukari/issues")?;
-    module.add("__license__", "BSD")?;
-    module.add("__url__", "https://github.com/FasterSpeeding/Rukari")?;
-    module.add("__version__", "0.1.0")?;
     module.add_class::<crate::bot::Bot>()?;
 
     assert!(
