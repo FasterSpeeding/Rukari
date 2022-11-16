@@ -114,8 +114,8 @@ impl Shard {
         self.shard_count
     }
 
-    fn get_user_id<'p>(&self, py: Python<'p>) -> PyResult<&'p PyAny> {
-        PyNotImplementedError::new_err("Not implemented")
+    fn get_user_id(&self, py: Python) -> PyResult<()> {
+        Err(PyNotImplementedError::new_err("Not implemented"))
     }
 
     fn close(&self) -> PyResult<()> {
