@@ -114,11 +114,8 @@ impl Shard {
         self.shard_count
     }
 
-    fn get_get_user_id<'p>(&self, py: Python<'p>) -> PyResult<&'p PyAny> {
-        fut_into_coro::<()>(
-            py,
-            async move { Err(PyNotImplementedError::new_err("Not implemented")) },
-        )
+    fn get_user_id<'p>(&self, py: Python<'p>) -> PyResult<&'p PyAny> {
+        PyNotImplementedError::new_err("Not implemented"),
     }
 
     fn close(&self) -> PyResult<()> {
