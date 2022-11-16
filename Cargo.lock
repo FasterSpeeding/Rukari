@@ -793,8 +793,8 @@ dependencies = [
  "serde_json",
  "tokio",
  "twilight-gateway",
- "twilight-http",
- "twilight-model",
+ "twilight-http 0.14.0",
+ "twilight-model 0.11.3",
 ]
 
 [[package]]
@@ -1185,8 +1185,8 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "twilight-gateway-queue",
- "twilight-http",
- "twilight-model",
+ "twilight-http 0.11.1",
+ "twilight-model 0.11.3",
  "url",
 ]
 
@@ -1198,14 +1198,33 @@ checksum = "0f7951f688ea81c7f68bad1cfabbe1bb6bcc08984347e3075d20923b65ff2041"
 dependencies = [
  "tokio",
  "tracing",
- "twilight-http",
+ "twilight-http 0.11.1",
 ]
 
 [[package]]
 name = "twilight-http"
-version = "0.11.0"
+version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c02713ac747c27448be764d6629dcf4d07fbcd8fc855096b6e0ab6717c685be0"
+checksum = "92f608fc399bf8c6961747d3030dbe73d78a3de2ee20f7dca9b8befb0dc40094"
+dependencies = [
+ "hyper",
+ "hyper-rustls",
+ "percent-encoding",
+ "rand",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "twilight-http-ratelimiting 0.11.1",
+ "twilight-model 0.11.3",
+ "twilight-validate 0.11.1",
+]
+
+[[package]]
+name = "twilight-http"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6537962cfaaa433e18c4805e4d071ef175026bebaff933ce3109a467795e1512"
 dependencies = [
  "brotli",
  "hyper",
@@ -1216,16 +1235,28 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
- "twilight-http-ratelimiting",
- "twilight-model",
- "twilight-validate",
+ "twilight-http-ratelimiting 0.14.0",
+ "twilight-model 0.14.0",
+ "twilight-validate 0.14.0",
 ]
 
 [[package]]
 name = "twilight-http-ratelimiting"
-version = "0.11.0"
+version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8329e421d810eb18ddd41c3c1b78cbc6cd9e82b70850ac3f70d4e6d93e9ff72"
+checksum = "173ac00feb4dcf8f8005c8d304627790f4dfcbc0479ca9550fecb896616df253"
+dependencies = [
+ "futures-util",
+ "http",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "twilight-http-ratelimiting"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65c4b3d51ada9826a7d4070374388769586f1b9fee81cf57ca2deb0f399cff5c"
 dependencies = [
  "futures-util",
  "http",
@@ -1235,9 +1266,23 @@ dependencies = [
 
 [[package]]
 name = "twilight-model"
-version = "0.11.0"
+version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c44d87f62a032ea0d8053481672844cab0115330d99d655791be94a31d585256"
+checksum = "aa7475388ee4cd61769e19d5ae100b2fbafcf570f4e9647350546eebd679214b"
+dependencies = [
+ "bitflags",
+ "serde",
+ "serde-value",
+ "serde_repr",
+ "time",
+ "tracing",
+]
+
+[[package]]
+name = "twilight-model"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3ccebf3a29754a19a0af5728bb0e5f1c86a3a379058ea233a09c8c67a62cd6e"
 dependencies = [
  "bitflags",
  "serde",
@@ -1249,11 +1294,20 @@ dependencies = [
 
 [[package]]
 name = "twilight-validate"
-version = "0.11.0"
+version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d8ee22c7e5321064abdd9ad1c6a7f0a7502db11db018a2f72326c9314bcea41"
+checksum = "82d6f675e4b2aecbe60105ef40d5d88e08f0c6f5c23d9a3f93a6e3ed82c810db"
 dependencies = [
- "twilight-model",
+ "twilight-model 0.11.3",
+]
+
+[[package]]
+name = "twilight-validate"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c897f0cd4f73261b8a68724f9ae94795705f4473e7defeb0515890a435c691ce"
+dependencies = [
+ "twilight-model 0.14.0",
 ]
 
 [[package]]
