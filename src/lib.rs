@@ -48,7 +48,7 @@ struct BotManager {
 // shard_count: Option<Vec<u64>>,
 // shard_ids: Option<Vec<u64>>,
 
-pub(crate) fn to_intents(intents: Option<u64>) -> PyResult<Intents> {
+pub(crate) fn to_intents(   intents: Option<u64>   ) -> PyResult<Intents> {
     intents
         .map(Intents::from_bits)
         .unwrap_or_else(|| {
