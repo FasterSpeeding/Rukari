@@ -14,3 +14,29 @@ dependencies = ["anyio~=3.6", "hikari~=2.0.0.dev109"]
 Homepage = "https://github.com/FasterSpeeding/Rukari"
 Repository = "https://github.com/FasterSpeeding/Rukari"
 Documentation = "https://github.com/FasterSpeeding/Rukari/blob/master/README.md"
+
+[tool.black]
+line-length     = 120
+target-version  = ["py39"]
+include         = ".*pyi?$"
+
+[tool.isort]
+profile = "black"
+force_single_line = true
+
+[tool.mypy]
+# some good strict settings
+python_version = 3.9
+strict = true
+warn_unreachable = true
+
+# more narrow type ignores
+show_error_codes = true
+
+[tool.pyright]
+include = ["noxfile.py", "rukari.pyi"]
+
+pythonVersion = "3.9"
+typeCheckingMode = "strict"
+reportMissingModuleSource = "error"
+reportMissingTypeStubs = "error"
