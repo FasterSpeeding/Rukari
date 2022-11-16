@@ -115,7 +115,7 @@ impl Shard {
     }
 
     fn get_user_id<'p>(&self, py: Python<'p>) -> PyResult<&'p PyAny> {
-        PyNotImplementedError::new_err("Not implemented"),
+        PyNotImplementedError::new_err("Not implemented")
     }
 
     fn close(&self) -> PyResult<()> {
