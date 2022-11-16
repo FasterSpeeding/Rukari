@@ -28,6 +28,7 @@
 // CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
+#![feature(once_cell)]
 #![allow(clippy::too_many_arguments)] // This isn't compatible with the Python functions we're implementing.
 #![allow(clippy::borrow_deref_ref)] // Leads to a ton of false positives around args of py types.
 use pyo3::types::PyType;
@@ -35,18 +36,8 @@ use pyo3::PyResult;
 use twilight_gateway::cluster::ShardScheme;
 use twilight_model::gateway::Intents;
 
-enum BotMessage {}
-
 mod bot;
 mod shard;
-
-#[pyo3::pyclass]
-struct BotManager {
-    intents: Intents,
-    token: String,
-}
-// shard_count: Option<Vec<u64>>,
-// shard_ids: Option<Vec<u64>>,
 
 pub(crate) fn to_intents(intents: Option<u64>) -> PyResult<Intents> {
     intents
@@ -70,7 +61,6 @@ pub(crate) fn fetch_shards_info(token: &str) -> Result<ShardScheme, Box<dyn std:
                 .build()
                 .gateway()
                 .authed()
-                .exec()
                 .await?
                 .model()
                 .await
@@ -81,22 +71,6 @@ pub(crate) fn fetch_shards_info(token: &str) -> Result<ShardScheme, Box<dyn std:
                 })
                 .map_err(Box::from)
         })
-}
-
-#[pyo3::pymethods]
-impl BotManager {
-    #[new]
-    #[args(token, "/", "*", intents = "None")]
-    fn new(token: String, intents: Option<u64>) -> PyResult<Self> {
-        Ok(Self {
-            intents: to_intents(intents)?,
-            token,
-        })
-    }
-
-    #[args(self, "/")]
-    fn start(&self) {
-    }
 }
 
 

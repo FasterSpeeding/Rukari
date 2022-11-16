@@ -31,15 +31,15 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::future::{ready, Future, Ready};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use futures_util::StreamExt;
 use log::{as_error, debug, warn};
 use pyo3::exceptions::{PyKeyError, PyValueError};
-use pyo3::types::{IntoPyDict, PyTuple};
+use pyo3::types::{IntoPyDict, PyDict, PyTuple};
 use pyo3::{pyclass, pymethods, IntoPy, Py, PyAny, PyErr, PyObject, PyResult, Python, ToPyObject};
-use pyo3_anyio::tokio::{await_py1, fut_into_coro, local_fut_into_coro};
+use pyo3_anyio::tokio::{await_py1, fut_into_coro};
 use serde_json::Value;
 use tokio::sync::RwLock;
 use twilight_gateway::cluster::{Cluster, ShardScheme};
@@ -47,9 +47,32 @@ use twilight_model::gateway::event::Event;
 use twilight_model::gateway::payload::outgoing::identify::IdentifyProperties;
 use twilight_model::gateway::Intents;
 
-use crate::shard::Shard;
+use crate::shard::{Shard, ShardState};
 
 pyo3::import_exception!(hikari, ComponentStateConflictError);
+
+
+static WRAP_GATHER: OnceLock<PyObject> = OnceLock::new();
+
+fn gather(py: Python<'_>) -> PyResult<&PyAny> {
+    WRAP_GATHER
+        .get_or_try_init(|| {
+            let globals = PyDict::new(py);
+            py.run(
+                r#"
+import asyncio
+
+def gather(*coros):
+    await asyncio.gather(*coros)
+            "#,
+                Some(globals),
+                None,
+            )?;
+
+            Ok::<_, PyErr>(globals.get_item("gather").unwrap().to_object(py))
+        })
+        .map(|value| value.as_ref(py))
+}
 
 
 #[pyclass(unsendable)]
@@ -124,12 +147,13 @@ pub struct Bot {
 }
 
 impl Bot {
-    fn get_shard<'p>(&self, py: Python<'p>, guild: &PyObject) -> PyResult<Py<crate::shard::Shard>> {
+    fn get_shard(&self, guild: &PyAny) -> PyResult<Py<crate::shard::Shard>> {
         if !self.get_is_alive() {
             return Err(PyErr::new::<ComponentStateConflictError, _>(("Bot isn't running",)));
         }
 
-        let guild = guild.extract::<u64>(py)?;
+        let py = guild.py();
+        let guild = guild.extract::<u64>()?;
         let shard_id = (guild >> 22) % self.shard_config.borrow().as_ref().unwrap().total();
 
         self.shards
@@ -171,11 +195,21 @@ impl Bot {
             .borrow_mut()
             .get_or_insert_with(|| crate::fetch_shards_info(&self.token).unwrap())
             .clone();
+        let shard_state = ShardState::new();
         let shards = self.shards.clone();
         let shards_ = shard_config
             .iter()
             .map(|id| {
-                let shard = Py::new(py, Shard::new(cluster_arc.clone(), shard_config.total(), id, intents))?;
+                let shard = Py::new(
+                    py,
+                    Shard::new(
+                        cluster_arc.clone(),
+                        shard_state.clone(),
+                        shard_config.total(),
+                        id,
+                        intents,
+                    ),
+                )?;
                 Ok((id, shard))
             })
             .collect::<PyResult<HashMap<u64, Py<Shard>>>>()?;
@@ -570,37 +604,32 @@ impl Bot {
         &self,
         py: Python<'p>,
         status: Option<PyObject>,
-        idle_since: Option<Option<PyObject>>,
-        activity: Option<Option<PyObject>>,
+        idle_since: Option<PyObject>,
+        activity: Option<PyObject>,
         afk: Option<PyObject>,
     ) -> PyResult<&'p PyAny> {
-        let shards = self.shards.as_ref();
+        let shards = self.shards.clone();
+        let coros = shards
+            .try_read()
+            .map_err(|_| PyErr::new::<ComponentStateConflictError, _>(("Bot isn't running",)))?
+            .values()
+            .map(|shard| shard.call_method1(py, "update_presence", (&status, &idle_since, &activity, &afk)))
+            .filter_map(Result::ok)
+            .collect::<Vec<_>>();
 
-        local_fut_into_coro(py, async move {
-            // let coros = shards
-            //     .try_read()
-            //     .map_err(|err| PyErr::new::<ComponentStateConflictError, _>(("Bot isn't
-            // running",)))?     .values()
-            //     .map(|shard| shard.call_method1(py, "update_presence", (&status,
-            // &idle_since, &activity, &afk)))     .filter_map(Result::ok)
-            //     .collect::<Vec<_>>();
-
-            // py.import("asyncio")?
-            //     .call_method1("gather", pyo3::types::PyTuple::new(py, coros));
-            Ok(())
-        })
+        gather(py)?.call1(pyo3::types::PyTuple::new(py, coros))
     }
 
     #[args(guild, channel, "*", self_mute = "None", self_deaf = "None")]
     fn update_voice_state<'p>(
         &self,
         py: Python<'p>,
-        guild: PyObject,
-        channel: Option<PyObject>,
-        self_mute: Option<PyObject>,
-        self_deaf: Option<PyObject>,
+        guild: &'p PyAny,
+        channel: Option<&'p PyAny>,
+        self_mute: Option<&'p PyAny>,
+        self_deaf: Option<&'p PyAny>,
     ) -> PyResult<&'p PyAny> {
-        self.get_shard(py, &guild)?
+        self.get_shard(guild)?
             .borrow(py)
             .update_voice_state(py, guild, channel, self_mute, self_deaf)
     }
@@ -617,14 +646,14 @@ impl Bot {
     fn request_guild_members<'p>(
         &self,
         py: Python<'p>,
-        guild: PyObject,
+        guild: &PyAny,
         include_presences: Option<&PyAny>,
         query: String,
         limit: u64,
         users: Option<&PyAny>,
         nonce: Option<&PyAny>,
     ) -> PyResult<&'p PyAny> {
-        self.get_shard(py, &guild)?.borrow(py).request_guild_members(
+        self.get_shard(guild)?.borrow(py).request_guild_members(
             py,
             guild,
             include_presences,
