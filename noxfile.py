@@ -154,8 +154,7 @@ def type_check(session: nox.Session) -> None:
     # TODO: https://github.com/pypa/pip/issues/11440
     install_requirements(session, "hikari", *_dev_dep("nox", "type_check"))
     _run_pyright(session)
-    # Right now MyPy is allowed to fail without failing CI as the alternative is to let MyPy bugs block releases.
-    session.run("python", "-m", "mypy", "rukari.pyi", "--show-error-codes", success_codes=[0, 1])
+    session.run("python", "-m", "mypy", "rukari.pyi", "--show-error-codes")
 
 
 @nox.session(name="verify-types", reuse_venv=True)

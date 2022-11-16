@@ -30,21 +30,10 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 import datetime
-import typing
-from collections import abc as _collections
+from collections import abc as collections
+from concurrent import futures
 
 import hikari
-
-__author__: typing.Final[str]
-__ci__: typing.Final[str]
-__copyright__: typing.Final[str]
-__coverage__: typing.Final[str]
-__docs__: typing.Final[str]
-__email__: typing.Final[str]
-__issue_tracker__: typing.Final[str]
-__license__: typing.Final[str]
-__url__: typing.Final[str]
-__version__: typing.Final[str]
 
 class Bot(
     hikari.EventFactoryAware,
@@ -53,18 +42,78 @@ class Bot(
     hikari.RESTAware,
     hikari.ShardAware,
 ):
-    __slots__: _collections.Iterable[str]
+    __slots__: collections.Iterable[str]
 
     def __init__(
         self,
         token: str,
         /,
         *,
-        http_settings: hikari.impl.HTTPSettings | None = None,
-        intents: hikari.Intents | int | None = None,
-        proxy_settings: hikari.impl.ProxySettings | None = None,
-        max_rate_limit: float = 300.0,
-        max_retries: int = 3,
-        shards: tuple[int, int, int] | None = None,
+        http_settings: hikari.impl.HTTPSettings = ...,
+        intents: hikari.Intents | int = ...,
+        proxy_settings: hikari.impl.ProxySettings = ...,
+        max_rate_limit: float = ...,
+        max_retries: int = ...,
+        shards: tuple[int, int, int] = ...,
+        rest_url: str = ...,
+        gateway_url: str = ...,
     ) -> None: ...
-    def run(self, *, backend: str = "asyncio") -> None: ...
+    @property
+    def entity_factory(self) -> hikari.api.EntityFactory: ...
+    @property
+    def event_factory(self) -> hikari.api.EventFactory: ...
+    @property
+    def event_manager(self) -> hikari.api.EventManager: ...
+    @property
+    def executor(self) -> futures.Executor | None: ...
+    @property
+    def heartbeat_latencies(self) -> collections.Mapping[int, float]: ...
+    @property
+    def heartbeat_latency(self) -> float: ...
+    @property
+    def http_settings(self) -> hikari.api.HTTPSettings: ...
+    @property
+    def intents(self) -> hikari.Intents: ...
+    @property
+    def is_alive(self) -> bool: ...
+    @property
+    def proxy_settings(self) -> hikari.api.ProxySettings: ...
+    @property
+    def rest(self) -> hikari.api.RESTClient: ...
+    @property
+    def shard_count(self) -> int: ...
+    @property
+    def shards(self) -> collections.Mapping[int, hikari.api.GatewayShard]: ...
+    @property
+    def voice(self) -> hikari.api.VoiceComponent: ...
+    async def close(self) -> None: ...
+    def get_me(self) -> hikari.OwnUser | None: ...
+    async def join(self) -> None: ...
+    async def request_guild_members(
+        self,
+        guild: hikari.SnowflakeishOr[hikari.PartialGuild],
+        *,
+        include_presences: hikari.UndefinedOr[bool] = ...,
+        query: str = ...,
+        limit: int = ...,
+        users: hikari.UndefinedOr[hikari.SnowflakeishSequence[hikari.User]] = ...,
+        nonce: hikari.UndefinedOr[str] = ...,
+    ) -> None: ...
+    def run(self, *, backend: str = ...) -> None: ...
+    async def start(self) -> None: ...
+    async def update_presence(
+        self,
+        *,
+        status: hikari.UndefinedOr[hikari.Status] = ...,
+        idle_since: hikari.UndefinedNoneOr[datetime.datetime] = ...,
+        activity: hikari.UndefinedNoneOr[hikari.Activity] = ...,
+        afk: hikari.UndefinedOr[bool] = ...,
+    ) -> None: ...
+    async def update_voice_state(
+        self,
+        guild: hikari.SnowflakeishOr[hikari.PartialGuild],
+        channel: hikari.SnowflakeishOr[hikari.GuildVoiceChannel] | None,
+        *,
+        self_mute: hikari.UndefinedOr[bool] = ...,
+        self_deaf: hikari.UndefinedOr[bool] = ...,
+    ) -> None: ...
