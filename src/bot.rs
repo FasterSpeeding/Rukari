@@ -299,7 +299,7 @@ fn call_in_loop(
 }
 
 async fn dispatch_lifetime(dispatch: &PyObject, event: PyObject) -> PyResult<PyObject> {
-    Python::with_gil(|py| await_py1(dispatch.as_ref(py), &[event]))?.await
+    Python::with_gil(|py| await_py1(dispatch.as_ref(py), &[event.as_ref(py)]))?.await
 }
 
 
@@ -737,7 +737,8 @@ async fn make_event_handler(
             let name = name.to_object(py);
 
             // TODO: error handling
-            if let Err(err) = task_locals.call_soon1(consume_raw_event.as_ref(py), &[name, shard.to_object(py), data]) {
+            if let Err(err) = task_locals.call_soon1(
+                consume_raw_event.as_ref(py), &[name.as_ref(py), shard.as_ref(py), data.as_ref(py)]) {
                 warn!(err = as_error!(err); "Failed to call call_soon_threadsafe");
             }
         });
