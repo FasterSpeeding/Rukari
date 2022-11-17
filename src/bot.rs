@@ -740,7 +740,7 @@ async fn make_event_handler(
             let result = task_locals.call_soon1(consume_raw_event.as_ref(py), &[
                 name.as_ref(py),
                 shard.as_ref(py),
-                data.as_ref(py)
+                data.as_ref(py),
             ]);
             if let Err(err) = result {
                 warn!(err = as_error!(err); "Failed to call call_soon_threadsafe");
