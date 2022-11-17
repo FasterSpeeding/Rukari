@@ -640,9 +640,9 @@ dependencies = [
 
 [[package]]
 name = "pyo3-anyio"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e68b58d787d11f2095e514b161376e158c577da6729b04af64dd315842938e32"
+checksum = "17749199b301575363f503e25e14209a0f4118d3265de27879ab1c5ee8dc0d5c"
 dependencies = [
  "async-oneshot",
  "once_cell",
