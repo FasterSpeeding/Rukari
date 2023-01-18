@@ -1,0 +1,38 @@
+name: Upgrade dependency locks
+
+on:
+  schedule:
+    - cron: "0 12 1 * *"
+  workflow_dispatch:
+
+jobs:
+  upgrade-deps:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
+        with:
+          submodules: "true"
+
+      - name: Set up Python 3.9
+        uses: actions/setup-python@d27e3f3d7c64b4bbf8e4abfb9b63b83e846e0435
+        with:
+          python-version: "3.9"
+
+      - name: install prerequisites
+        run: |
+          python -m pip install --upgrade pip wheel
+          python -m pip install -r ./piped/python/base-requirements/nox.txt
+
+      - name: Upgrade dependency locks
+        run: python -m nox -s freeze-locks
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@2b011faafdcbc9ceb11414d64d0573f37c774b04
+        with:
+          author: "always-on-duty[bot] <120557446+always-on-duty[bot]@users.noreply.github.com>"
+          branch: task/upgrade-deps
+          commit-message: Upgrade dependency locks
+          committer: "always-on-duty[bot] <120557446+always-on-duty[bot]@users.noreply.github.com>"
+          title: Upgrade dependency locks
+          token: ${{ secrets.ACTIONS_TOKEN || secrets.GITHUB_TOKEN }}

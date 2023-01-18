@@ -54,7 +54,7 @@ pub(crate) fn fetch_shards_info(token: &str) -> Result<ShardScheme, Box<dyn std:
         .enable_all()
         .build()?
         .block_on(async {
-            // TOOD: handle back off
+            // TODO: handle back off
             twilight_http::Client::builder()
                 .timeout(std::time::Duration::from_secs(120))
                 .token(token.to_string())
