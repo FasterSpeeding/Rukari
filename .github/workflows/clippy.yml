@@ -1,4 +1,8 @@
-name: Run checks
+name: Run clippy
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 on:
   push:
@@ -10,16 +14,18 @@ on:
   workflow_dispatch:
 
 jobs:
-  clippy_check:
+  clippy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
+
+      - uses: actions-rs/toolchain@b2417cde72dcf67f306c0ae8e0828a81bf0b189f
         with:
             toolchain: nightly
             components: clippy
             override: true
-      - uses: actions-rs/clippy-check@v1
+
+      - uses: actions-rs/clippy-check@b5b5f21f4797c02da247df37026fcd0a5024aa4d
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           args: --all-features

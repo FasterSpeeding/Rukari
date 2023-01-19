@@ -451,7 +451,7 @@ impl Bot {
         rest_url: Option<&str>,
         gateway_url: &str,
     ) -> PyResult<Self> {
-        pyo3::prepare_freethreaded_python(); // TODO: is this neccessary or is this poorly working around a bug?
+        pyo3::prepare_freethreaded_python(); // TODO: is this necessary or is this poorly working around a bug?
         let intents = crate::to_intents(intents)?;
 
         let hikari_impl = py.import("hikari.impl")?;

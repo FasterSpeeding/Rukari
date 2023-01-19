@@ -20,6 +20,29 @@ line-length     = 120
 target-version  = ["py39"]
 include         = ".*pyi?$"
 
+[tool.flake8]
+accept-encodings = "utf-8"
+count = true
+docstring-convention = "numpy"
+eradicate-aggressive = true
+# extend-select = ["TC100", "TC101"]
+force-future-annotations = true
+ignore-decorators = "overload"
+max-complexity = 20
+max-function-length = 100
+# Technically this is 120, but black has a policy of "1 or 2 over is fine if it is tidier", so we have to raise this.
+max-line-length = 130
+min_python_version = "3.9"
+pep585-activation = "always"
+show_source = false
+statistics = false
+ignore = ["CFQ002", "D102", "E402", "INP001"]
+per-file-ignores = [
+    "noxfile.py: D100, D102, FA101, F401, F403, INP001",
+    "*.pyi: D100, D101, E301, E302, E704, FA101",
+    "noxfile.py: INP001",
+]
+
 [tool.isort]
 profile = "black"
 force_single_line = true
@@ -32,6 +55,33 @@ warn_unreachable = true
 
 # more narrow type ignores
 show_error_codes = true
+
+[tool.piped]
+codespell_ignore = "crate"
+default_sessions = ["reformat", "verify-markup", "spell-check", "type-check", "verify-types"]
+hide = [
+    "build",
+    "generate-docs",
+    "publish",
+    "slot-check",
+    "test",
+    "test-publish",
+    "test-coverage",
+]
+project_name = "rukari"
+top_level_targets = ["./noxfile.py", "./rukari.pyi"]
+
+[tool.piped.github_actions.clippy]
+[tool.piped.github_actions.freeze_for_pr]
+[tool.piped.github_actions.lint]
+[tool.piped.github_actions.reformat]
+[tool.piped.github_actions.resync_piped]
+[tool.piped.github_actions.rustfmt]
+[tool.piped.github_actions.type_check]
+[tool.piped.github_actions.update_licence]
+[tool.piped.github_actions.upgrade_locks]
+[tool.piped.github_actions.verify_locks]
+[tool.piped.github_actions.verify_types]
 
 [tool.pyright]
 include = ["noxfile.py", "rukari.pyi"]
