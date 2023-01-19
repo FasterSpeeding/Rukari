@@ -1,0 +1,34 @@
+name: Run Rustfmt
+
+on: pull_request
+
+jobs:
+  rustfmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
+
+      - name: Set up Python 3.9
+        uses: actions/setup-python@d27e3f3d7c64b4bbf8e4abfb9b63b83e846e0435
+        with:
+          python-version: "3.9"
+
+      - uses: actions-rs/toolchain@b2417cde72dcf67f306c0ae8e0828a81bf0b189f
+        with:
+            toolchain: nightly
+            components: rustfmt
+            override: true
+
+      - name: Reformat
+        run: cargo +nightly fmt
+
+      - name: Package
+        run: python -m nox -s bot-package-diff
+
+      - uses: actions/upload-artifact@0b7f8abb1508181956e8e162db84b466c27e18ce
+        with:
+          name: gogo.patch
+          path: gogo.patch
+
+      - name: Check diff file
+        run: python -m nox -s is-diff-file-empty
