@@ -41,7 +41,7 @@ mod shard;
 
 pub(crate) fn to_intents(intents: Option<u64>) -> PyResult<Intents> {
     intents
-        .map(Intents::from_bits   )
+        .map(Intents::from_bits)
         .unwrap_or_else(|| {
             Some(Intents::all() & !(Intents::GUILD_MEMBERS | Intents::GUILD_PRESENCES | Intents::MESSAGE_CONTENT))
         })
