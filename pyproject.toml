@@ -98,4 +98,3 @@ reportPropertyTypeMismatch = "error"
 reportUninitializedInstanceVariable = "error"
 reportUnnecessaryTypeIgnoreComment = "error"
 reportUnusedCallResult = "none"  # Enforces doing `_ = ...`.
-
