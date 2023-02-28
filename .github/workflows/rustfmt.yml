@@ -24,7 +24,7 @@ jobs:
           python -m pip install --upgrade pip wheel
           python -m pip install -r ./piped/python/base-requirements/nox.txt
 
-      - uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af
+      - uses: actions-rs/toolchain@b2417cde72dcf67f306c0ae8e0828a81bf0b189f
         with:
             toolchain: nightly
             components: rustfmt
