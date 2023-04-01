@@ -28,7 +28,7 @@
 // CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
-#![feature(once_cell)]
+#![feature(once_cell_try)]
 #![allow(clippy::too_many_arguments)] // This isn't compatible with the Python functions we're implementing.
 #![allow(clippy::borrow_deref_ref)] // Leads to a ton of false positives around args of py types.
 use pyo3::types::PyType;
