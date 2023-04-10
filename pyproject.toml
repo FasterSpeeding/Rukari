@@ -20,6 +20,9 @@ line-length     = 120
 target-version  = ["py39"]
 include         = ".*pyi?$"
 
+[tool.codespell]
+ignore-regex = "crate"
+
 [tool.flake8]
 accept-encodings = "utf-8"
 count = true
@@ -57,7 +60,6 @@ warn_unreachable = true
 show_error_codes = true
 
 [tool.piped]
-codespell_ignore = "crate"
 default_sessions = ["reformat", "verify-markup", "spell-check", "type-check", "verify-types"]
 hide = [
     "build",
