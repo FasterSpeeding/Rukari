@@ -10,4 +10,4 @@ bot = rukari.Bot("TOKEN")
 bot.run()
 ```
 
-The main notable difference between Rukari's `Bot` 
+The main notable difference between Rukari's `Bot`
