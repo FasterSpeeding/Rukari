@@ -42,12 +42,15 @@ use pyo3::{pyclass, pymethods, IntoPy, Py, PyAny, PyErr, PyObject, PyResult, Pyt
 use pyo3_anyio::tokio::{await_py1, fut_into_coro};
 use serde_json::Value;
 use tokio::sync::RwLock;
-use twilight_gateway::cluster::{Cluster, ShardScheme};
-use twilight_model::gateway::event::Event;
+use twilight_gateway::error::ReceiveMessageError;
+use twilight_gateway::stream::{create_range, ShardMessageStream, ShardRef};
+use twilight_gateway::{Config, Message};
 use twilight_model::gateway::payload::outgoing::identify::IdentifyProperties;
 use twilight_model::gateway::Intents;
 
 use crate::shard::{Shard, ShardState};
+use crate::ShardScheme;
+
 
 pyo3::import_exception!(hikari, ComponentStateConflictError);
 
@@ -135,7 +138,6 @@ impl _BotRefs {
 
 #[pyclass(unsendable)]
 pub struct Bot {
-    cluster: Arc<RwLock<Option<Arc<Cluster>>>>,
     gateway_url: String,
     intents: Intents,
     intents_py: PyObject,
@@ -154,7 +156,7 @@ impl Bot {
 
         let py = guild.py();
         let guild = guild.extract::<u64>()?;
-        let shard_id = (guild >> 22) % self.shard_config.borrow().as_ref().unwrap().total();
+        let shard_id = (guild >> 22) % self.shard_config.borrow().as_ref().unwrap().total;
 
         self.shards
             .try_read()
@@ -171,7 +173,6 @@ impl Bot {
             ));
         }
 
-        let cluster_arc = self.cluster.clone();
         let event_manager = self.get_event_manager(py);
         let consume_raw_event = event_manager.getattr(py, "consume_raw_event")?;
 
@@ -195,21 +196,14 @@ impl Bot {
             .borrow_mut()
             .get_or_insert_with(|| crate::fetch_shards_info(&self.token).unwrap())
             .clone();
+
         let shard_state = ShardState::new();
         let shards = self.shards.clone();
         let shards_ = shard_config
-            .iter()
+            .range
+            .clone()
             .map(|id| {
-                let shard = Py::new(
-                    py,
-                    Shard::new(
-                        cluster_arc.clone(),
-                        shard_state.clone(),
-                        shard_config.total(),
-                        id,
-                        intents,
-                    ),
-                )?;
+                let shard = Py::new(py, Shard::new(shard_state.clone(), shard_config.total, id, intents))?;
                 Ok((id, shard))
             })
             .collect::<PyResult<HashMap<u64, Py<Shard>>>>()?;
@@ -230,18 +224,18 @@ impl Bot {
             Python::with_gil(|py| call_in_loop(task_locals.clone_py(py), start_voice))?.await?;
             dispatch_lifetime(&dispatch, starting_event).await?;
 
-            // TODO: handle error
-            let (cluster, events) = Cluster::builder(token, intents)
-                .event_types(twilight_gateway::EventTypeFlags::SHARD_PAYLOAD)
+            let config = Config::builder(token, intents)
+                .event_types(twilight_gateway::EventTypeFlags::empty())
                 .identify_properties(IdentifyProperties::new("rukari", "rukari", std::env::consts::OS))
-                .shard_scheme(shard_config)
-                .gateway_url(gateway_url)
-                .build()
-                .await
-                .unwrap();
+                .proxy_url(gateway_url)
+                .build();
 
-            let cluster = Arc::new(cluster);
-            *cluster_arc.write().await = Some(cluster.clone());
+            let mut raw_shards: Vec<_> = create_range(shard_config.range, shard_config.total, config, |_, builder| {
+                builder.build()
+            })
+            .collect();
+
+            let events = ShardMessageStream::new(raw_shards.iter_mut());
 
             let handle_event = make_event_handler(task_locals.clone(), shards.clone(), consume_raw_event).await?;
             tokio::spawn(pyo3_anyio::tokio::scope(task_locals, async move {
@@ -249,14 +243,12 @@ impl Bot {
 
                 events.for_each_concurrent(None, handle_event).await;
                 notify.notify_waiters();
-                *cluster_arc.write().await = None;
-                shards.write().await.clear();
+                // TODO: unset on close?
 
                 let _ = dispatch_lifetime(&dispatch, stopping_event).await.ok();
                 let _ = dispatch_lifetime(&dispatch, stopped_event).await.ok();
             }));
 
-            cluster.up().await;
             Ok(())
         })
     }
@@ -536,7 +528,7 @@ impl Bot {
             notify: Arc::new(tokio::sync::Notify::new()),
             refs,
             shards: shard_map,
-            shard_config: RefCell::new(shards.map(|(from, to, total)| ShardScheme::Range { from, to, total })),
+            shard_config: RefCell::new(shards.map(|(from, to, total)| ShardScheme::new(from, to, total))),
             token,
             gateway_url: gateway_url.to_owned(),
         })
@@ -697,21 +689,22 @@ impl ConsumeRawEvent {
     }
 }
 
+// TODO: PyResult is unnecessary
 async fn make_event_handler(
     task_locals: pyo3_anyio::any::TaskLocals,
     shards: Arc<RwLock<HashMap<u64, Py<Shard>>>>,
     consume_raw_event: PyObject,
-) -> PyResult<impl FnMut((u64, Event)) -> Ready<()>> {
+) -> PyResult<impl FnMut((ShardRef<'_>, Result<Message, ReceiveMessageError>)) -> Ready<()>> {
     let shards_read = shards.read().await.clone();
 
-    Ok(move |item| {
-        let (shard_id, payload) = match item {
-            (shard_id, Event::ShardPayload(payload)) => (shard_id, payload),
+    Ok(move |event: (ShardRef<'_>, _)| {
+        let (shard_id, payload) = match event {
+            (shard, Ok(Message::Text(payload))) => (shard.id().number(), serde_json::from_str::<Value>(&payload)),
             _ => unimplemented!(),
         };
 
         let shard = shards_read.get(&shard_id).unwrap();
-        let parsed = match serde_json::from_slice::<Value>(&payload.bytes) {
+        let parsed = match payload {
             Ok(data) => data,
             Err(err) => {
                 warn!(err = as_error!(err); "Failed to deserialize JSON");

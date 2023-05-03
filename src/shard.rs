@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 // BSD 3-Clause License
 //
 // Copyright (c) 2022-2023, Lucina
@@ -6,16 +7,14 @@
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are met:
 //
-// * Redistributions of source code must retain the above copyright notice, this
-//   list of conditions and the following disclaimer.
+// * Redistributions of source code must retain the above copyright notice, this list of conditions and the
+//   following disclaimer.
 //
-// * Redistributions in binary form must reproduce the above copyright notice,
-//   this list of conditions and the following disclaimer in the documentation
-//   and/or other materials provided with the distribution.
+// * Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the
+//   following disclaimer in the documentation and/or other materials provided with the distribution.
 //
-// * Neither the name of the copyright holder nor the names of its contributors
-//   may be used to endorse or promote products derived from this software
-//   without specific prior written permission.
+// * Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote
+//   products derived from this software without specific prior written permission.
 //
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
@@ -36,7 +35,6 @@ use pyo3::types::{PyInt, PyType};
 use pyo3::{PyAny, PyErr, PyResult, Python, ToPyObject};
 use pyo3_anyio::tokio::fut_into_coro;
 use tokio::sync::RwLock;
-use twilight_gateway::cluster::Cluster;
 use twilight_model::gateway::payload::outgoing::request_guild_members::{
     RequestGuildMemberId, RequestGuildMembersInfo,
 };
@@ -121,24 +119,18 @@ impl Default for ShardState {
 
 #[pyo3::pyclass]
 pub struct Shard {
-    cluster: Arc<RwLock<Option<Arc<Cluster>>>>,
     intents: u64,
+    shard: Arc<RwLock<Option<twilight_gateway::Shard>>>,
     shard_count: u64,
     shard_id: u64,
     state: Arc<RwLock<ShardState>>,
 }
 
 impl Shard {
-    pub fn new(
-        cluster: Arc<RwLock<Option<Arc<Cluster>>>>,
-        state: ShardState,
-        shard_count: u64,
-        shard_id: u64,
-        intents: Intents,
-    ) -> Self {
+    pub fn new(state: ShardState, shard_count: u64, shard_id: u64, intents: Intents) -> Self {
         Self {
-            cluster,
             intents: intents.bits(),
+            shard: Arc::new(RwLock::new(None)),
             shard_count,
             shard_id,
             state: Arc::new(RwLock::new(state)),
@@ -150,21 +142,18 @@ impl Shard {
 impl Shard {
     #[getter]
     fn get_heartbeat_latency(&self) -> f64 {
-        let cluster = match self.cluster.try_read() {
-            Ok(cluster) if cluster.is_some() => cluster,
+        let shard = match self.shard.try_read() {
+            Ok(shard) if shard.is_some() => shard,
             _ => return f64::NAN,
         };
 
-        cluster
+        shard
             .as_ref()
             .unwrap()
-            .shard(self.shard_id)
-            .and_then(|shard| {
-                shard
-                    .info()
-                    .ok()
-                    .and_then(|info| info.latency().recent().back().map(Duration::as_secs_f64))
-            })
+            .latency()
+            .recent()
+            .first()
+            .map(Duration::as_secs_f64)
             .unwrap_or(f64::NAN)
     }
 
@@ -220,9 +209,8 @@ impl Shard {
         activity: Option<&'p PyAny>,
         afk: Option<&'p PyAny>,
     ) -> PyResult<&'p PyAny> {
-        let cluster = self.cluster.clone();
+        let shard = self.shard.clone();
         let state = self.state.clone();
-        let shard_id = self.shard_id;
         let undefined = py.import("hikari")?.getattr("UNDEFINED")?;
         let afk = _flatten_undefined(undefined, afk)
             .map(|v| v.extract::<bool>())
@@ -280,7 +268,7 @@ impl Shard {
             };
             drop(state_write);
 
-            send_event(cluster, shard_id, message).await
+            send_event(shard, message).await
         })
     }
 
@@ -293,9 +281,8 @@ impl Shard {
         self_mute: Option<&'p PyAny>,
         self_deaf: Option<&'p PyAny>,
     ) -> PyResult<&'p PyAny> {
-        let cluster = self.cluster.clone();
+        let shard = self.shard.clone();
         let state = self.state.clone();
-        let shard_id = self.shard_id;
         let undefined = py.import("hikari")?.getattr("UNDEFINED")?;
         let py_int = PyType::new::<PyInt>(py);
 
@@ -324,7 +311,7 @@ impl Shard {
             let message = state_write.to_voice_payload(guild, channel);
             drop(state_write);
 
-            send_event(cluster, shard_id, message).await
+            send_event(shard, message).await
         })
     }
 
@@ -347,8 +334,7 @@ impl Shard {
         users: Option<&PyAny>,
         nonce: Option<&PyAny>,
     ) -> PyResult<&'p PyAny> {
-        let cluster = self.cluster.clone();
-        let shard_id = self.shard_id;
+        let shard = self.shard.clone();
         let undefined = py.import("hikari")?.getattr("UNDEFINED")?;
         let py_int = PyType::new::<PyInt>(py);
 
@@ -374,7 +360,7 @@ impl Shard {
             },
         };
 
-        fut_into_coro(py, async move { send_event(cluster, shard_id, message).await })
+        fut_into_coro(py, async move { send_event(shard, message).await })
     }
 }
 
@@ -385,17 +371,9 @@ fn to_id<T>(py_int: &PyType, value: &PyAny) -> PyResult<Id<T>> {
 
 
 async fn send_event(
-    cluster: Arc<RwLock<Option<Arc<Cluster>>>>,
-    shard_id: u64,
-    message: impl twilight_gateway::shard::Command,
+    shard: Arc<RwLock<Option<twilight_gateway::Shard>>>,
+    message: impl twilight_gateway::Command,
 ) -> PyResult<()> {
-    cluster
-        .read()
-        .await
-        .as_ref()
-        .ok_or_else(|| pyo3::PyErr::new::<ComponentStateConflictError, _>(("Bot isn't running",)))?
-        .command(shard_id, &message)
-        .await
-        .unwrap(); // TODO: error handling
+    shard.write().await.as_mut().unwrap().command(&message).await.unwrap(); // TODO: error handling
     Ok(())
 }
