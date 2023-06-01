@@ -95,9 +95,9 @@ aiohttp==3.8.4 ; python_full_version >= "3.9.0" and python_version < "3.12" \
 aiosignal==1.3.1 ; python_full_version >= "3.9.0" and python_version < "3.12" \
     --hash=sha256:54cd96e15e1649b75d6c87526a6ff0b6c1b0dd3459f43d9ca11d48c339b68cfc \
     --hash=sha256:f8376fb07dd1e86a584e4fcdec80b36b7f81aac666ebc724e2c090300dd83b17
-anyio==3.6.2 ; python_full_version >= "3.9.0" and python_version < "3.12" \
-    --hash=sha256:25ea0d673ae30af41a0c442f81cf3b38c7e79fdc7b60335a4c14e05eb0947421 \
-    --hash=sha256:fbbe32bd270d2a2ef3ed1c5d45041250284e31fc0a4df4a5a6071842051a51e3
+anyio==3.7.0 ; python_full_version >= "3.9.0" and python_version < "3.12" \
+    --hash=sha256:275d9973793619a5374e1c89a4f4ad3f4b0a5510a2b5b939444bee8f4c4d37ce \
+    --hash=sha256:eddca883c4175f14df8aedce21054bfca3adb70ffe76a9f607aef9d7fa2ea7f0
 async-timeout==4.0.2 ; python_full_version >= "3.9.0" and python_version < "3.12" \
     --hash=sha256:2163e1640ddb52b7a8c80d0a67a08587e5d245cc9c553a74a847056bc2976b15 \
     --hash=sha256:8ca1e4fcf50d07413d66d1a5e416e42cfdf5851c981d679a09851a6853383b3c
@@ -186,6 +186,9 @@ colorama==0.4.6 ; python_full_version >= "3.9.0" and python_version < "3.12" and
 colorlog==6.7.0 ; python_full_version >= "3.9.0" and python_version < "3.12" \
     --hash=sha256:0d33ca236784a1ba3ff9c532d4964126d8a2c44f1f0cb1d2b0728196f512f662 \
     --hash=sha256:bd94bd21c1e13fac7bd3153f4bc3a7dc0eb0974b8bc2fdf1a989e474f6e582e5
+exceptiongroup==1.1.1 ; python_full_version >= "3.9.0" and python_version < "3.11" \
+    --hash=sha256:232c37c63e4f682982c8b6459f33a8981039e5fb8756b2074364e5055c498c9e \
+    --hash=sha256:d484c3090ba2889ae2928419117447a14daf3c1231d5e30d0aae34f354f01785
 frozenlist==1.3.3 ; python_full_version >= "3.9.0" and python_version < "3.12" \
     --hash=sha256:008a054b75d77c995ea26629ab3a0c0d7281341f2fa7e1e85fa6153ae29ae99c \
     --hash=sha256:02c9ac843e3390826a265e331105efeab489ffaf4dd86384595ee8ce6d35ae7f \
