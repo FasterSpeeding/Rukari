@@ -15,7 +15,7 @@ name = "rukari"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3-log = "0.8.3"
+pyo3-log = "0.9.0"
 pythonize = "0.16.0"
 twilight-gateway = "0.14.1"
 twilight-http = "0.15.2"
