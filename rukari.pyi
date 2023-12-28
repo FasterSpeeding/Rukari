@@ -43,7 +43,7 @@ class Bot(
     hikari.RESTAware,
     hikari.ShardAware,
 ):
-    __slots__: collections.Iterable[str]
+    __slots__: collections.Sequence[str]
 
     def __init__(
         self,
