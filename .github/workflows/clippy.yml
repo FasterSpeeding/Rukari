@@ -17,7 +17,7 @@ jobs:
   clippy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@8eb1f6a495037164bea451156472f35fdd6bafc0
+      - uses: actions/checkout@cd7d8d697e10461458bc61a30d094dc601a8b017
 
       - uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af
         with:
