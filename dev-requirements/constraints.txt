@@ -180,9 +180,9 @@ frozenlist==1.4.1 ; python_full_version >= "3.9.0" and python_version < "3.12" \
     --hash=sha256:fbeb989b5cc29e8daf7f976b421c220f1b8c731cbf22b9130d8815418ea45887 \
     --hash=sha256:fde5bd59ab5357e3853313127f4d3565fc7dad314a74d7b5d43c22c6a5ed2ced \
     --hash=sha256:fe1a06da377e3a1062ae5fe0926e12b84eceb8a50b350ddca72dc85015873f74
-hikari==2.0.0.dev125 ; python_full_version >= "3.9.0" and python_version < "3.12" \
-    --hash=sha256:4c139e7f81089dc234e21d81177ca7d0d97bba974ac0de5a03b3e7e0ac0c6541 \
-    --hash=sha256:f9677386b77f58fcb04d1b91cd6f4f5b306014fb952b11615ef0ca3430296953
+hikari==2.0.0.dev126 ; python_full_version >= "3.9.0" and python_version < "3.12" \
+    --hash=sha256:1ace1bc6d3a634a97d6d6aa3a8bc56f1cf3ad02caae4a9860699247b52e650a5 \
+    --hash=sha256:cdbe0916dcfdc8e2dee16f89731a20f66e27e01914a549e06b06c74261141d31
 idna==3.7 ; python_full_version >= "3.9.0" and python_version < "3.12" \
     --hash=sha256:028ff3aadf0609c1fd278d8ea3089299412a7a8b9bd005dd08b9f8285bcb5cfc \
     --hash=sha256:82fee1fc78add43492d3a1898bfa6d8a904cc97d8427f683ed8e798d07761aa0
