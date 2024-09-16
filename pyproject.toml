@@ -73,6 +73,9 @@ hide = [
 project_name = "rukari"
 top_level_targets = ["./noxfile.py", "./rukari.pyi"]
 
+[tool.piped.github_actions."*"]
+REQUIRES_RUST = "true"
+
 [tool.piped.github_actions.clippy]
 [tool.piped.github_actions.freeze_for_pr]
 [tool.piped.github_actions.lint]
