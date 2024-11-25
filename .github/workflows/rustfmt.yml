@@ -14,15 +14,8 @@ jobs:
         with:
           submodules: "true"
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b
-        with:
-          python-version: "3.11"
-
-      - name: install prerequisites
-        run: |
-          python -m pip install --upgrade pip wheel
-          python -m pip install -r ./piped/python/base-requirements/nox.txt
+      - name: Install Python
+        uses: ./.github/actions/setup-py
 
       - uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af
         with:
@@ -34,7 +27,7 @@ jobs:
         run: cargo +nightly fmt
 
       - name: Package
-        run: python -m nox -s bot-package-diff
+        run: nox -s bot-package-diff
 
       - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882
         with:
@@ -42,4 +35,4 @@ jobs:
           path: gogo.patch
 
       - name: Check diff file
-        run: python -m nox -s is-diff-file-empty
+        run: nox -s is-diff-file-empty
