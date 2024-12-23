@@ -21,7 +21,7 @@ twilight-gateway = "0.14.1"
 twilight-http = "0.15.4"
 twilight-model = "0.14.5"
 serde = "1.0.216"
-serde_json = "1.0.133"
+serde_json = "1.0.134"
 
 [dependencies.futures-util]
 default-features = false
