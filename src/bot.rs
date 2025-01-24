@@ -199,14 +199,6 @@ impl Bot {
 
         let shard_state = ShardState::new();
         let shards = self.shards.clone();
-        let shards_ = shard_config
-            .range
-            .clone()
-            .map(|id| {
-                let shard = Py::new(py, Shard::new(shard_state.clone(), shard_config.total, id, intents))?;
-                Ok((id, shard))
-            })
-            .collect::<PyResult<HashMap<u64, Py<Shard>>>>()?;
         let token = self.token.clone();
 
         let event_factory = self.get_event_factory(py);
@@ -217,6 +209,21 @@ impl Bot {
         let stopping_event = event_factory.call_method0(py, "deserialize_stopping_event")?;
         let stopped_event = event_factory.call_method0(py, "deserialize_stopping_event")?;
 
+        let config = Config::builder(token, intents)
+            .event_types(twilight_gateway::EventTypeFlags::empty())
+            .identify_properties(IdentifyProperties::new("rukari", "rukari", std::env::consts::OS))
+            .proxy_url(gateway_url)
+            .build();
+
+        let shards_ = shard_config
+            .range
+            .clone()
+            .map(|id| {
+                let shard = Py::new(py, Shard::new(shard_state.clone(), shard_config.total, id, intents))?;
+                Ok((id, shard))
+            })
+            .collect::<PyResult<HashMap<u64, Py<Shard>>>>()?;
+
         Ok(async move {
             *shards.write().await = shards_;
             let task_locals = Python::with_gil(|py| pyo3_anyio::tokio::get_locals_py(py).unwrap());
@@ -224,18 +231,13 @@ impl Bot {
             Python::with_gil(|py| call_in_loop(task_locals.clone_py(py), start_voice))?.await?;
             dispatch_lifetime(&dispatch, starting_event).await?;
 
-            let config = Config::builder(token, intents)
-                .event_types(twilight_gateway::EventTypeFlags::empty())
-                .identify_properties(IdentifyProperties::new("rukari", "rukari", std::env::consts::OS))
-                .proxy_url(gateway_url)
-                .build();
-
-            let mut raw_shards: Vec<_> = create_range(shard_config.range, shard_config.total, config, |_, builder| {
+            let mut raw_shards: Vec<_> = create_range(shard_config.range.clone(), shard_config.total.clone(), config, |_, builder| {
                 builder.build()
             })
+            // .map(|shard| (shard.id().number(), shard))  HashMap<_, _>
             .collect();
-
-            let events = ShardMessageStream::new(raw_shards.iter_mut());
+    
+            let events = ShardMessageStream::new(raw_shards.iter_mut());  // values_mut
 
             let handle_event = make_event_handler(task_locals.clone(), shards.clone(), consume_raw_event).await?;
             tokio::spawn(pyo3_anyio::tokio::scope(task_locals, async move {
@@ -244,6 +246,7 @@ impl Bot {
                 events.for_each_concurrent(None, handle_event).await;
                 notify.notify_waiters();
                 // TODO: unset on close?
+                // drop(events);
 
                 let _ = dispatch_lifetime(&dispatch, stopping_event).await.ok();
                 let _ = dispatch_lifetime(&dispatch, stopped_event).await.ok();
