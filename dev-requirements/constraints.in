@@ -1,2 +1,2 @@
-anyio~=3.6
+anyio~=4.9
 hikari~=2.0.0.dev109
