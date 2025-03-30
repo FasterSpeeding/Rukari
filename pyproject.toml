@@ -8,7 +8,7 @@ version = "0.1.0"
 requires-python = ">=3.11,<3.12"
 license = {file = "LICENSE"}
 authors = [ {name = "Faster Speeding", email="lucina@lmbyrne.dev"} ]
-dependencies = ["anyio~=3.6", "hikari~=2.0.0.dev109"]
+dependencies = ["anyio~=3.6", "hikari~=2.2.0"]
 
 [project.urls]
 Homepage = "https://github.com/FasterSpeeding/Rukari"
